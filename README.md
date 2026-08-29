@@ -34,7 +34,7 @@ Everything in this repository was executed, not just written:
 | | Status |
 |---|---|
 | SQL migrations | Applied to PostgreSQL 16.13, idempotent, rebuild clean from scratch |
-| Dedup, scoring, rate limits, opt-out, work claiming, state machine | **10 assertions in `scripts/smoke_test.sql`, all passing** |
+| Dedup, scoring, rate limits, opt-out, work claiming, state machine | **12 assertions in `scripts/smoke_test.sql`, all passing** |
 | Code-node logic — parsers, guardrails, robots.txt, bounce detection | **57 tests in `scripts/test_code_nodes.mjs`, run against the committed workflow JSON** |
 | SQL inside the workflows | **All 65 statements `PREPARE`-checked against the live schema** |
 | Workflow JSON | Structurally validated — no duplicate names, no dangling connections, no unreachable nodes |
@@ -43,15 +43,26 @@ Everything in this repository was executed, not just written:
 | Dashboard | Typechecks, builds, and renders live data over a least-privilege role |
 | `docker-compose.yml` | `docker compose config` valid, required-variable guards fire |
 | `bootstrap.sh` | Runs end to end from an empty database to a readiness report |
-| **The workflows running end to end in n8n** | **Not verified** — needs your credentials and a live n8n |
+| Workflow JSON accepted by n8n | **All 13 imported into a real n8n instance** (`scripts/validate_in_n8n.sh`) |
+| A workflow actually running | **Workflow 20 executed in real n8n against a real database**, qualifying 3 clinics and rejecting a hospital, a pharmacy and a lead with no contact channel |
+| **The workflows that call external APIs** | **Not verified** — Places, Gemini, SMTP and IMAP need your credentials |
 | **Gemini prompt output quality** | **Not verified** — that is Phase 2's job, and it needs your judgement |
 
-Four real bugs were caught by that verification and fixed: a two-statement query
-the Postgres driver cannot execute; a state-machine hole that let an opted-out
-lead be moved back toward contact; a prompt that was loaded and documented but
-never called by any workflow; and — the one that would have stopped the pipeline
-working at all — a claim query that locked 15 leads to use 4, leaving 11 locked
-and starving the next workflow of the same status.
+Six real bugs were caught by that verification and fixed:
+
+1. A two-statement query the Postgres driver cannot execute.
+2. A state-machine hole letting an opted-out lead be moved back toward contact.
+3. A prompt loaded and documented but never called by any workflow.
+4. A claim query that locked 15 leads to use 4, starving the next workflow.
+5. **A tag collision that aborted the n8n import at the second workflow** —
+   found only by importing into real n8n.
+6. **A scoring gate that rejected every lead**, because the deterministic and
+   blended phases shared a threshold calibrated for the blended one. Found only
+   by executing a workflow and looking at what it did.
+
+The last two are the argument for `scripts/validate_in_n8n.sh`: structural
+validation says the JSON is well-formed, and it was — while being unimportable
+and, once imported, throwing away every clinic it found.
 
 ## Quickstart
 
@@ -61,6 +72,9 @@ and starving the next workflow of the same status.
 
 # 2. the workflow logic (parsers, guardrails, bounce detection)
 node scripts/test_code_nodes.mjs
+
+# 2b. optional but worth it once: prove n8n itself accepts and runs them
+npm install n8n && ./scripts/validate_in_n8n.sh ./node_modules/.bin/n8n zenvexa_acq
 
 # 3. check the sending domain BEFORE any of this touches a real clinic
 ./scripts/check_deliverability.sh your-sending-domain.tld <dkim-selector>

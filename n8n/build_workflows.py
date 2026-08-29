@@ -109,12 +109,15 @@ class Builder:
                     "saveDataErrorExecution": "all", "saveDataSuccessExecution": "all"}
         if self.error_workflow:
             settings["errorWorkflow"] = ERROR_WORKFLOW_NAME
+        # Deliberately no "tags" key. n8n's importer creates each workflow's
+        # tags as it goes and hits UNIQUE constraint failed: tag_entity.name on
+        # the second workflow declaring the same tag, aborting the import.
+        # Tag them in the UI after importing instead.
         return {
             "name": self.name,
             "nodes": self.nodes,
             "connections": self.conns,
             "settings": settings,
-            "tags": [{"name": t} for t in (self.tags or ["acq"])],
             "active": False,
             "meta": {"acqWorkflowKey": self.key},
         }

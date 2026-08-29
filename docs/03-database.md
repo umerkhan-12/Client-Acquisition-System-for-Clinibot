@@ -56,6 +56,26 @@ The next workflow, claiming the same `QUALIFIED` status, then found 5 leads
 instead of 16. Running hourly and every twenty minutes, the two would have
 starved each other indefinitely. Section 7 of the smoke test guards it.
 
+## Two scoring gates, not one
+
+`compute_score()` runs twice, and the phases answer different questions:
+
+| Phase | Question | Threshold | Typical score |
+|---|---|---|---|
+| `DETERMINISTIC` | Is this worth ~$0.01 of research? | `qualify_deterministic` = 20 | 20-40 |
+| `BLENDED` | Is this worth an email? | `qualify` = 45 | 60-95 |
+
+They originally shared `qualify` = 45. That number was calibrated against the
+blended score, which is 40-odd points higher because it counts signals that only
+exist after research. A real workflow-20 run made the consequence obvious: a
+dental clinic with a website, a phone and a published WhatsApp number scored 38
+and was rejected before it could ever be researched. All six seeded leads were
+rejected — the system would have found clinics and thrown every one away.
+
+The deterministic gate is deliberately permissive; the hard filtering already
+happened in workflow 20's triage (no contact channel, hospital, pharmacy, no
+website). Section 10 of the smoke test guards both gates.
+
 ## Is it ready to send?
 
 ```sql

@@ -20,6 +20,21 @@ validator.
 The builder validates as it writes: duplicate node names, connections to
 non-existent nodes, and unreachable non-trigger nodes all fail the build.
 
+## Validating against real n8n
+
+```bash
+npm install n8n                                    # once, ~2.7 GB
+./scripts/validate_in_n8n.sh ./node_modules/.bin/n8n zenvexa_acq
+```
+
+Imports all 13 workflows into a throwaway n8n, imports a Postgres credential
+whose id matches the placeholder in the JSON, and executes workflow 20 against
+the database.
+
+Worth doing once after any change to the builder. It found two bugs nothing else
+did: a tag collision that aborted the import at the second workflow, and a
+scoring gate that rejected every lead. Both passed structural validation.
+
 ## Importing
 
 ```bash

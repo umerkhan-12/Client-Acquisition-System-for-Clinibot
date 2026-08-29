@@ -205,7 +205,7 @@ Research is followed by a separate **qualification pass** (`score_lead`). Extrac
 | # | Node | Type | Detail |
 |---|---|---|---|
 | 1 | Hourly (Business Hours) | Schedule trigger | cron `0 6-14 * * 1-5` |
-| 2 | Claim Leads Needing Research | Postgres | `SELECT l.id, l.clinic_name, l.website, l.domain, l.city, l.area, l.category,` |
+| 2 | Claim Leads Needing Research | Postgres | `SELECT id, clinic_name, website, domain, city, area, category,` |
 | 3 | Per Lead | Loop | batch size 1 |
 | 4 | Plan Fetch | Code |  |
 | 5 | Fetch robots.txt | HTTP | `GET =…` |
@@ -232,7 +232,7 @@ Research is followed by a separate **qualification pass** (`score_lead`). Extrac
 
 **Database operations**
 
-- **Claim Leads Needing Research** — `SELECT l.id, l.clinic_name, l.website, l.domain, l.city, l.area, l.category,`
+- **Claim Leads Needing Research** — `SELECT id, clinic_name, website, domain, city, area, category,`
 - **Load Crawl Settings** — `SELECT (SELECT  value #>> '{}'       FROM acq.settings WHERE key = 'discovery.`
 - **Record Discovered Email** — `UPDATE acq.leads`
 - **Save Research** — `WITH archived AS (`

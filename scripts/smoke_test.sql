@@ -371,6 +371,52 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 10. Scoring gates differ by phase ============================='
+
+-- Regression guard. Both phases once shared the `qualify` threshold of 45,
+-- which was calibrated against the blended score. A dental clinic with a
+-- website, a phone and a WhatsApp number scores 38 deterministically and was
+-- rejected before it could earn the 40-odd points research adds. A real
+-- workflow-20 run rejected all six seeded leads.
+
+INSERT INTO acq.leads (market_id, clinic_name, city, category, priority_tier,
+                       website, phone, whatsapp, source, source_url, status)
+SELECT m.id, 'Gate Test Dental', 'Karachi', 'DENTAL', 1,
+       'https://gatetest.pk', '02136631122', '03001234567',
+       'TEST', 'https://gatetest', 'QUALIFIED'
+FROM acq.markets m WHERE m.code = 'PK';
+
+DO $$
+DECLARE lead uuid; det jsonb; bl jsonb;
+BEGIN
+  SELECT id INTO lead FROM acq.leads WHERE clinic_name = 'Gate Test Dental';
+
+  det := acq.compute_score(lead, 'DETERMINISTIC');
+  IF (det->>'score')::int <> 38 THEN
+    RAISE EXCEPTION 'FAIL: expected a deterministic score of 38, got %', det->>'score';
+  END IF;
+  IF NOT (det->>'qualifies')::boolean THEN
+    RAISE EXCEPTION 'FAIL: a website + phone + WhatsApp tier-1 clinic must be worth researching (score %, gate %)',
+      det->>'score', det->>'gate';
+  END IF;
+  IF det->>'gate_key' <> 'qualify_deterministic' THEN
+    RAISE EXCEPTION 'FAIL: deterministic phase used gate %', det->>'gate_key';
+  END IF;
+  RAISE NOTICE 'PASS: deterministic phase qualifies at % against gate %',
+    det->>'score', det->>'gate';
+
+  -- With no research attached, the blended phase must hold it back.
+  bl := acq.compute_score(lead, 'BLENDED');
+  IF (bl->>'qualifies')::boolean THEN
+    RAISE EXCEPTION 'FAIL: blended phase should not qualify an unresearched lead at %', bl->>'score';
+  END IF;
+  IF bl->>'gate_key' <> 'qualify' THEN
+    RAISE EXCEPTION 'FAIL: blended phase used gate %', bl->>'gate_key';
+  END IF;
+  RAISE NOTICE 'PASS: blended phase holds the same lead back at gate %', bl->>'gate';
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;

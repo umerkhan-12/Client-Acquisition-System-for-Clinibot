@@ -18,6 +18,7 @@ Nothing runs yet.
 - [ ] `./scripts/check_deliverability.sh sending-domain.tld <selector>` exits 0
 - [ ] `./scripts/bootstrap.sh zenvexa_acq` — migrations, prompts, smoke test, readiness
 - [ ] `node scripts/test_code_nodes.mjs` — 57 workflow-logic tests pass
+- [ ] `./scripts/validate_in_n8n.sh …` — n8n imports all 13 and runs one
 - [ ] Second n8n container up, credentials created, workflows imported
 - [ ] Telegram bot created, `notify.telegram_chat_id` set
 

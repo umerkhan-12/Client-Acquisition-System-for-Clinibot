@@ -224,11 +224,6 @@
     "saveDataErrorExecution": "all",
     "saveDataSuccessExecution": "all"
   },
-  "tags": [
-    {
-      "name": "acq"
-    }
-  ],
   "active": false,
   "meta": {
     "acqWorkflowKey": "wf00"
