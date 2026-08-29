@@ -1,0 +1,101 @@
+# =====================================================================
+# A SECOND n8n, beside Clinibot's — not a replacement for it.
+#
+# Reasoning in docs/08-deployment.md. Briefly: a runaway prospecting loop
+# must not consume the workers running Clinibot's patient-facing
+# automations, and outbound SMTP and billing keys should not sit in the
+# same credential store as production workflows.
+#
+#   docker compose up -d n8n              # alongside an existing Postgres
+#   docker compose --profile dev up -d    # plus a throwaway local Postgres
+# =====================================================================
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n-acq
+    restart: unless-stopped
+    ports:
+      # Bound to loopback: put a reverse proxy in front rather than
+      # exposing the UI. Only /webhook/* needs to be public.
+      - "127.0.0.1:5679:5678"
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5679/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Karachi}
+      TZ: ${GENERIC_TIMEZONE:-Asia/Karachi}
+
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:?set N8N_BASIC_AUTH_PASSWORD in .env}
+
+      # The loops in workflows 10, 30 and 50 generate a lot of execution
+      # history. Without pruning, n8n's own database outgrows yours.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"          # 14 days
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: "all"
+      EXECUTIONS_DATA_SAVE_ON_ERROR: "all"
+      EXECUTIONS_DATA_SAVE_ON_PROGRESS: "false"
+
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_LOG_LEVEL: "info"
+    volumes:
+      - n8n_acq_data:/home/node/.n8n
+      # Read-only mount so workflows can be imported from the CLI:
+      #   docker compose exec n8n n8n import:workflow --separate \
+      #     --input=/workflows
+      - ./n8n/workflows:/workflows:ro
+    networks:
+      - acq
+
+  # Development only. In production the acquisition database is a database
+  # on the Postgres server Clinibot already uses, created with:
+  #   CREATE ROLE acq_app LOGIN PASSWORD '…';
+  #   CREATE DATABASE zenvexa_acq OWNER acq_app;
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-acq-dev
+    profiles: ["dev"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ACQ_POSTGRES_DB:-zenvexa_acq}
+      POSTGRES_USER: ${ACQ_POSTGRES_USER:-acq_app}
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-devonly}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pg_acq_dev:/var/lib/postgresql/data
+      # Migrations run in filename order on first start of an empty volume.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ACQ_POSTGRES_USER:-acq_app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - acq
+
+  # Captures outbound mail instead of sending it. Point the zenvexa-smtp
+  # credential at mailhog:1025 during Phase 2 and read the results at
+  # http://localhost:8025 — nothing reaches a real clinic.
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog-acq
+    profiles: ["dev"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+    networks:
+      - acq
+
+volumes:
+  n8n_acq_data:
+  pg_acq_dev:
+
+networks:
+  acq:
+    driver: bridge

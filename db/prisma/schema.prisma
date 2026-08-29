@@ -1,0 +1,926 @@
+// =====================================================================
+// Prisma models for the acq schema.
+//
+// READ THIS FIRST
+//
+// The SQL migrations in db/migrations/ are authoritative. This file exists so
+// the NestJS backend can query the same tables with a typed client if you later
+// fold the acquisition system into Clinibot. It is NOT a migration source:
+// running `prisma migrate` against this would try to recreate objects the SQL
+// already owns, and would drop the CHECK constraints, partial unique indexes
+// and functions Prisma cannot express.
+//
+// Use it read-mostly:
+//     prisma db pull      // refresh from the real database after a migration
+//     prisma generate     // regenerate the client
+//
+// Prisma cannot model stored functions, so the system's core operations stay
+// raw calls:
+//
+//     await prisma.$queryRaw`SELECT acq.upsert_lead(${payload}::jsonb)`
+//     await prisma.$queryRaw`SELECT * FROM acq.claim_send_slots(${id}::uuid, 5)`
+//     await prisma.$queryRaw`SELECT acq.lead_profile(${id}::uuid)`
+//
+// Constraints enforced in SQL that do NOT appear here, and must not be assumed
+// away in application code:
+//   - leads.public_email requires email_source AND email_evidence_url (CHECK)
+//   - one active scoring_config, one active prompt per key (partial UNIQUE)
+//   - one current lead_research row per lead (partial UNIQUE)
+//   - emails.message_id / unsubscribe_token uniqueness (partial UNIQUE)
+// =====================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ACQ_DATABASE_URL")
+  schemas  = ["acq"]
+}
+
+// ---------------------------------------------------------------- enums
+
+enum LeadStatus {
+  NEW
+  RESEARCHING
+  QUALIFIED
+  READY_FOR_REVIEW
+  APPROVED
+  CONTACTED
+  FOLLOW_UP_1
+  FOLLOW_UP_2
+  FOLLOW_UP_3
+  REPLIED
+  INTERESTED
+  DEMO_REQUESTED
+  DEMO_BOOKED
+  CUSTOMER
+  NOT_INTERESTED
+  LATER
+  OPTED_OUT
+  BOUNCED
+  INVALID
+  DO_NOT_CONTACT
+  REJECTED
+
+  @@map("lead_status")
+  @@schema("acq")
+}
+
+enum ContactType {
+  EMAIL
+  PHONE
+  WHATSAPP
+  WEBSITE_FORM
+  SOCIAL
+
+  @@map("contact_type")
+  @@schema("acq")
+}
+
+/// Note the absence of a GUESSED member: an address with no citable public
+/// source cannot be represented, let alone stored.
+enum ContactSource {
+  CLINIC_WEBSITE
+  GOOGLE_BUSINESS
+  OSM
+  PUBLIC_DIRECTORY
+  MANUAL
+  INBOUND_REPLY
+
+  @@map("contact_source")
+  @@schema("acq")
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PUBLICLY_LISTED
+  SYNTAX_OK
+  MX_OK
+  VERIFIED
+  INVALID
+  ROLE_ACCOUNT
+
+  @@map("verification_status")
+  @@schema("acq")
+}
+
+enum EmailStatus {
+  DRAFT
+  PENDING_APPROVAL
+  READY_TO_SEND
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+  BOUNCED
+
+  @@map("email_status")
+  @@schema("acq")
+}
+
+enum EmailEventType {
+  QUEUED
+  SENT
+  DELIVERED
+  SOFT_BOUNCE
+  HARD_BOUNCE
+  COMPLAINT
+  OPENED
+  CLICKED
+  REPLIED
+  FAILED
+  UNSUBSCRIBED
+
+  @@map("email_event_type")
+  @@schema("acq")
+}
+
+enum ReplyClass {
+  INTERESTED
+  VERY_INTERESTED
+  ASKING_PRICE
+  ASKING_DEMO
+  NEEDS_MORE_INFO
+  NOT_INTERESTED
+  OPT_OUT
+  LATER
+  WRONG_PERSON
+  AUTOMATIC_REPLY
+  UNCLEAR
+
+  @@map("reply_class")
+  @@schema("acq")
+}
+
+enum ApprovalKind {
+  EMAIL_DRAFT
+  REPLY_DRAFT
+  LOW_CONFIDENCE_CLASSIFICATION
+  DATA_CONFLICT
+  UNCERTAIN_EMAIL_ADDRESS
+  PRICING_QUESTION
+  LEGAL_QUESTION
+  COMPLAINT
+  DELETION_REQUEST
+  MEDICAL_QUESTION
+  CUSTOM_INTEGRATION
+  GUARDRAIL_FAILURE
+  OTHER
+
+  @@map("approval_kind")
+  @@schema("acq")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EDITED
+  EXPIRED
+
+  @@map("approval_status")
+  @@schema("acq")
+}
+
+enum SuppressionScope {
+  EMAIL
+  DOMAIN
+  PHONE
+  LEAD
+
+  @@map("suppression_scope")
+  @@schema("acq")
+}
+
+enum SuppressionReason {
+  OPT_OUT_REQUEST
+  HARD_BOUNCE
+  COMPLAINT
+  MANUAL
+  ROLE_ACCOUNT
+  INVALID_SYNTAX
+  NO_MX
+  COMPETITOR
+  LEGAL
+  DELETION_REQUEST
+
+  @@map("suppression_reason")
+  @@schema("acq")
+}
+
+enum IdentityKeyType {
+  PLACE_ID
+  OSM_ID
+  DOMAIN
+  EMAIL
+  PHONE
+  WHATSAPP
+  NAME_CITY
+
+  @@map("identity_key_type")
+  @@schema("acq")
+}
+
+enum Actor {
+  SYSTEM
+  AI
+  HUMAN
+  PROSPECT
+
+  @@map("actor")
+  @@schema("acq")
+}
+
+enum ConsentModel {
+  OPT_OUT_B2B
+  OPT_IN_REQUIRED
+  MIXED
+
+  @@map("consent_model")
+  @@schema("acq")
+}
+
+enum FollowUpStatus {
+  SCHEDULED
+  CANCELLED
+  SENT
+  SKIPPED
+
+  @@map("followup_status")
+  @@schema("acq")
+}
+
+// ------------------------------------------------------- configuration
+
+model Setting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?  @map("updated_by")
+
+  @@map("settings")
+  @@schema("acq")
+}
+
+model Market {
+  id           String       @id @default(uuid()) @db.Uuid
+  code         String       @unique
+  name         String
+  countryCode  String       @map("country_code")
+  phoneCc      String       @map("phone_cc")
+  timezone     String
+  currency     String       @default("USD")
+  languages    String[]
+  consentModel ConsentModel @default(OPT_OUT_B2B) @map("consent_model")
+  legalNotes   String?      @map("legal_notes")
+  enabled      Boolean      @default(false)
+  config       Json         @default("{}")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  leads          Lead[]
+  campaigns      Campaign[]
+  discoveryTasks DiscoveryTask[]
+
+  @@map("markets")
+  @@schema("acq")
+}
+
+model ScoringConfig {
+  id         String   @id @default(uuid()) @db.Uuid
+  version    String   @unique
+  weights    Json
+  thresholds Json
+  /// Partial unique index in SQL enforces at most one active row.
+  active     Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("scoring_configs")
+  @@schema("acq")
+}
+
+/// Credentials are NOT stored. These columns hold the NAME of the n8n
+/// credential to use, so secrets stay in n8n's encrypted store.
+model Mailbox {
+  id                 String    @id @default(uuid()) @db.Uuid
+  key                String    @unique
+  fromEmail          String    @map("from_email")
+  fromName           String    @map("from_name")
+  replyTo            String?   @map("reply_to")
+  smtpCredentialName String    @map("smtp_credential_name")
+  imapCredentialName String?   @map("imap_credential_name")
+  dailyCap           Int       @default(20) @map("daily_cap")
+  hourlyCap          Int       @default(6) @map("hourly_cap")
+  warmupStage        Int       @default(1) @map("warmup_stage")
+  warmupStartedOn    DateTime? @map("warmup_started_on") @db.Date
+  active             Boolean   @default(true)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  campaigns Campaign[]
+  emails    Email[]
+
+  @@map("mailboxes")
+  @@schema("acq")
+}
+
+model DiscoveryTask {
+  id               String    @id @default(uuid()) @db.Uuid
+  marketId         String    @map("market_id") @db.Uuid
+  city             String
+  area             String?
+  queryTerm        String    @map("query_term")
+  category         String
+  provider         String    @default("OSM")
+  priorityTier     Int       @default(2) @map("priority_tier") @db.SmallInt
+  bbox             Json?
+  cadenceDays      Int       @default(30) @map("cadence_days")
+  lastRunAt        DateTime? @map("last_run_at") @db.Timestamptz(6)
+  nextRunAt        DateTime  @default(now()) @map("next_run_at") @db.Timestamptz(6)
+  lastResultCount  Int?      @map("last_result_count")
+  enabled          Boolean   @default(true)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([nextRunAt])
+  @@map("discovery_tasks")
+  @@schema("acq")
+}
+
+// --------------------------------------------------------------- leads
+
+model Lead {
+  id             String  @id @default(uuid()) @db.Uuid
+  marketId       String  @map("market_id") @db.Uuid
+  clinicName     String  @map("clinic_name")
+  /// Maintained by a BEFORE trigger; do not write directly.
+  normalizedName String  @map("normalized_name")
+  website        String?
+  /// Maintained by a BEFORE trigger from `website`.
+  domain         String?
+  city           String?
+  area           String?
+  address        String?
+  lat            Decimal? @db.Decimal(10, 7)
+  lng            Decimal? @db.Decimal(10, 7)
+
+  /// Normalized to E.164 by a BEFORE trigger.
+  phone    String?
+  whatsapp String?
+
+  /// CHECK: an address may only be present alongside its source AND evidence URL.
+  publicEmail      String?        @map("public_email")
+  emailSource      ContactSource? @map("email_source")
+  emailEvidenceUrl String?        @map("email_evidence_url")
+
+  specialties   String[]
+  doctorCount   Int?     @map("doctor_count")
+  services      String[]
+  bookingMethod String?  @map("booking_method")
+  category      String?
+  priorityTier  Int      @default(2) @map("priority_tier") @db.SmallInt
+
+  source    String
+  sourceUrl String? @map("source_url")
+  sourceRef String? @map("source_ref")
+
+  leadScore      Int    @default(0) @map("lead_score")
+  aiScore        Int?   @map("ai_score")
+  scoreBreakdown Json   @default("{}") @map("score_breakdown")
+  scoringVersion String? @map("scoring_version")
+
+  status       LeadStatus @default(NEW)
+  statusReason String?    @map("status_reason")
+
+  lastContactedAt DateTime? @map("last_contacted_at") @db.Timestamptz(6)
+  nextFollowUpAt  DateTime? @map("next_follow_up_at") @db.Timestamptz(6)
+  followUpCount   Int       @default(0) @map("follow_up_count")
+  repliedAt       DateTime? @map("replied_at") @db.Timestamptz(6)
+
+  /// Once true, acq.transition_lead() refuses to move this lead toward contact
+  /// for ANY actor, including HUMAN.
+  optOut       Boolean @default(false) @map("opt_out")
+  doNotContact Boolean @default(false) @map("do_not_contact")
+
+  notes String?
+  raw   Json    @default("{}")
+
+  lockedBy String?   @map("locked_by")
+  lockedAt DateTime? @map("locked_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  market       Market            @relation(fields: [marketId], references: [id])
+  identityKeys LeadIdentityKey[]
+  contacts     LeadContact[]
+  research     LeadResearch[]
+  scores       LeadScore[]
+  emails       Email[]
+  emailEvents  EmailEvent[]
+  replies      Reply[]
+  followUps    FollowUp[]
+  optOuts      OptOut[]
+  approvals    Approval[]
+  activities   SalesActivity[]
+  notifications Notification[]
+  demoBookings DemoBooking[]
+  aiCalls      AiCall[]
+  deadLetters  DeadLetter[]
+
+  @@index([status, leadScore, createdAt])
+  @@index([marketId, city, area])
+  @@index([nextFollowUpAt])
+  @@map("leads")
+  @@schema("acq")
+}
+
+/// One row per identifier a business is known by. UNIQUE (keyType, keyValue)
+/// across the whole table is what makes cross-source deduplication work.
+model LeadIdentityKey {
+  id        BigInt          @id @default(autoincrement())
+  leadId    String          @map("lead_id") @db.Uuid
+  keyType   IdentityKeyType @map("key_type")
+  keyValue  String          @map("key_value")
+  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([keyType, keyValue])
+  @@index([leadId])
+  @@map("lead_identity_keys")
+  @@schema("acq")
+}
+
+model LeadContact {
+  id                 String             @id @default(uuid()) @db.Uuid
+  leadId             String             @map("lead_id") @db.Uuid
+  contactType        ContactType        @map("contact_type")
+  value              String
+  normalizedValue    String             @map("normalized_value")
+  label              String?
+  isPrimary          Boolean            @default(false) @map("is_primary")
+  verificationStatus VerificationStatus @default(UNVERIFIED) @map("verification_status")
+  source             ContactSource
+  /// Never null: every contact must be citable.
+  sourceUrl          String             @map("source_url")
+  verifiedAt         DateTime?          @map("verified_at") @db.Timestamptz(6)
+  discoveredAt       DateTime           @default(now()) @map("discovered_at") @db.Timestamptz(6)
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, contactType, normalizedValue])
+  @@index([contactType, normalizedValue])
+  @@map("lead_contacts")
+  @@schema("acq")
+}
+
+model LeadResearch {
+  id                  String   @id @default(uuid()) @db.Uuid
+  leadId              String   @map("lead_id") @db.Uuid
+  /// Partial unique index enforces one current row per lead.
+  isCurrent           Boolean  @default(true) @map("is_current")
+  clinicType          String?  @map("clinic_type")
+  facts               Json     @default("[]")
+  inferences          Json     @default("[]")
+  services            Json     @default("[]")
+  doctorCountEstimate Int?     @map("doctor_count_estimate")
+  hasWhatsapp         Boolean? @map("has_whatsapp")
+  hasOnlineBooking    Boolean? @map("has_online_booking")
+  hasVisibleReception Boolean? @map("has_visible_reception")
+  painPoint           String?  @map("pain_point")
+  recommendedPitch    String?  @map("recommended_pitch")
+  relevanceReason     String?  @map("relevance_reason")
+  confidence          Decimal? @db.Decimal(4, 3)
+  model               String?
+  promptVersion       String?  @map("prompt_version")
+  fetchedUrls         String[] @map("fetched_urls")
+  robotsAllowed       Boolean? @map("robots_allowed")
+  raw                 Json     @default("{}")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  staleAfter          DateTime @map("stale_after") @db.Timestamptz(6)
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([staleAfter])
+  @@map("lead_research")
+  @@schema("acq")
+}
+
+model LeadScore {
+  id             String   @id @default(uuid()) @db.Uuid
+  leadId         String   @map("lead_id") @db.Uuid
+  score          Int
+  breakdown      Json     @default("{}")
+  scorer         String
+  scoringVersion String?  @map("scoring_version")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
+  @@map("lead_scores")
+  @@schema("acq")
+}
+
+// ----------------------------------------------------------- campaigns
+
+model Campaign {
+  id                 String   @id @default(uuid()) @db.Uuid
+  key                String   @unique
+  name               String
+  marketId           String   @map("market_id") @db.Uuid
+  mailboxId          String   @map("mailbox_id") @db.Uuid
+  status             String   @default("ACTIVE")
+  dailySendLimit     Int      @default(20) @map("daily_send_limit")
+  hourlySendLimit    Int      @default(6) @map("hourly_send_limit")
+  perDomainLimit     Int      @default(1) @map("per_domain_limit")
+  perCampaignLimit   Int?     @map("per_campaign_limit")
+  maxFollowUps       Int      @default(3) @map("max_follow_ups")
+  minScoreToSend     Int      @default(55) @map("min_score_to_send")
+  sendingWindowStart DateTime @map("sending_window_start") @db.Time(6)
+  sendingWindowEnd   DateTime @map("sending_window_end") @db.Time(6)
+  sendingDays        Int[]    @map("sending_days")
+  timezone           String   @default("Asia/Karachi")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  market    Market         @relation(fields: [marketId], references: [id])
+  mailbox   Mailbox        @relation(fields: [mailboxId], references: [id])
+  steps     SequenceStep[]
+  emails    Email[]
+  followUps FollowUp[]
+
+  @@map("campaigns")
+  @@schema("acq")
+}
+
+model SequenceStep {
+  id           String  @id @default(uuid()) @db.Uuid
+  campaignId   String  @map("campaign_id") @db.Uuid
+  stepNo       Int     @map("step_no")
+  kind         String
+  minDelayDays Int     @default(4) @map("min_delay_days")
+  maxDelayDays Int     @default(6) @map("max_delay_days")
+  promptKey    String  @map("prompt_key")
+  enabled      Boolean @default(true)
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, stepNo])
+  @@map("sequence_steps")
+  @@schema("acq")
+}
+
+// -------------------------------------------------------------- emails
+
+model Email {
+  id                    String      @id @default(uuid()) @db.Uuid
+  leadId                String      @map("lead_id") @db.Uuid
+  campaignId            String      @map("campaign_id") @db.Uuid
+  mailboxId             String      @map("mailbox_id") @db.Uuid
+  stepNo                Int         @default(0) @map("step_no")
+  toEmail               String      @map("to_email")
+  subject               String
+  bodyText              String      @map("body_text")
+  bodyHtml              String?     @map("body_html")
+  personalizationReason String?     @map("personalization_reason")
+  suggestedFeature      String?     @map("suggested_feature")
+  aiConfidence          Decimal?    @map("ai_confidence") @db.Decimal(4, 3)
+  model                 String?
+  promptVersion         String?     @map("prompt_version")
+  status                EmailStatus @default(DRAFT)
+  /// Our own correlation id, NOT necessarily the RFC 5322 header the MTA
+  /// assigned — n8n's SMTP node cannot set custom headers.
+  messageId             String?     @map("message_id")
+  inReplyTo             String?     @map("in_reply_to")
+  threadKey             String?     @map("thread_key")
+  unsubscribeToken      String      @map("unsubscribe_token")
+  guardrailReport       Json        @default("{}") @map("guardrail_report")
+  approvedBy            String?     @map("approved_by")
+  approvedAt            DateTime?   @map("approved_at") @db.Timestamptz(6)
+  scheduledFor          DateTime?   @map("scheduled_for") @db.Timestamptz(6)
+  queuedAt              DateTime?   @map("queued_at") @db.Timestamptz(6)
+  sentAt                DateTime?   @map("sent_at") @db.Timestamptz(6)
+  failedAt              DateTime?   @map("failed_at") @db.Timestamptz(6)
+  attempts              Int         @default(0)
+  error                 String?
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime    @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  lead      Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaign  Campaign     @relation(fields: [campaignId], references: [id])
+  mailbox   Mailbox      @relation(fields: [mailboxId], references: [id])
+  events    EmailEvent[]
+  replies   Reply[]
+  followUps FollowUp[]
+  deadLetters DeadLetter[]
+
+  /// The idempotency guarantee: one email per lead per campaign per step.
+  @@unique([leadId, campaignId, stepNo])
+  @@index([status, scheduledFor])
+  @@index([leadId, createdAt])
+  @@map("emails")
+  @@schema("acq")
+}
+
+model EmailEvent {
+  id              BigInt         @id @default(autoincrement())
+  emailId         String?        @map("email_id") @db.Uuid
+  leadId          String?        @map("lead_id") @db.Uuid
+  event           EmailEventType
+  occurredAt      DateTime       @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  provider        String?
+  providerEventId String?        @map("provider_event_id")
+  detail          String?
+  payload         Json           @default("{}")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  email Email? @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  lead  Lead?  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([emailId, occurredAt])
+  @@index([event, occurredAt])
+  @@map("email_events")
+  @@schema("acq")
+}
+
+/// Rate-limit accounting. bucketHour -1 is the daily rollup.
+model SendCounter {
+  mailboxId  String   @map("mailbox_id") @db.Uuid
+  bucketDate DateTime @map("bucket_date") @db.Date
+  bucketHour Int      @map("bucket_hour") @db.SmallInt
+  sentCount  Int      @default(0) @map("sent_count")
+
+  @@id([mailboxId, bucketDate, bucketHour])
+  @@map("send_counters")
+  @@schema("acq")
+}
+
+// -------------------------------------------------------------- inbound
+
+model Reply {
+  id            String   @id @default(uuid()) @db.Uuid
+  leadId        String?  @map("lead_id") @db.Uuid
+  emailId       String?  @map("email_id") @db.Uuid
+  messageId     String   @unique @map("message_id")
+  inReplyTo     String?  @map("in_reply_to")
+  referencesHdr String?  @map("references_hdr")
+  fromEmail     String   @map("from_email")
+  fromName      String?  @map("from_name")
+  subject       String?
+  bodyText      String?  @map("body_text")
+  bodyHtml      String?  @map("body_html")
+  headers       Json     @default("{}")
+  isAutoReply   Boolean  @default(false) @map("is_auto_reply")
+  isBounce      Boolean  @default(false) @map("is_bounce")
+  matchedBy     String?  @map("matched_by")
+  receivedAt    DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead           Lead?                @relation(fields: [leadId], references: [id])
+  email          Email?               @relation(fields: [emailId], references: [id])
+  classification ReplyClassification?
+  approvals      Approval[]
+
+  @@index([leadId, receivedAt])
+  @@map("replies")
+  @@schema("acq")
+}
+
+model ReplyClassification {
+  id                 String     @id @default(uuid()) @db.Uuid
+  replyId            String     @unique @map("reply_id") @db.Uuid
+  class              ReplyClass
+  confidence         Decimal    @db.Decimal(4, 3)
+  reasoning          String?
+  extractedQuestions Json       @default("[]") @map("extracted_questions")
+  suggestedReply     String?    @map("suggested_reply")
+  requiresHuman      Boolean    @default(true) @map("requires_human")
+  escalationReason   String?    @map("escalation_reason")
+  model              String?
+  promptVersion      String?    @map("prompt_version")
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  reply Reply @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@map("reply_classifications")
+  @@schema("acq")
+}
+
+model FollowUp {
+  id               String         @id @default(uuid()) @db.Uuid
+  leadId           String         @map("lead_id") @db.Uuid
+  campaignId       String         @map("campaign_id") @db.Uuid
+  stepNo           Int            @map("step_no")
+  dueAt            DateTime       @map("due_at") @db.Timestamptz(6)
+  status           FollowUpStatus @default(SCHEDULED)
+  cancelledReason  String?        @map("cancelled_reason")
+  emailId          String?        @map("email_id") @db.Uuid
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  lead     Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  email    Email?   @relation(fields: [emailId], references: [id])
+
+  @@unique([leadId, campaignId, stepNo])
+  @@index([dueAt])
+  @@map("follow_ups")
+  @@schema("acq")
+}
+
+/// Single suppression list: opt-out requests, complaints, hard bounces, dead
+/// domains and manual blocks. acq.is_suppressed() is the only lookup needed.
+model OptOut {
+  id              String            @id @default(uuid()) @db.Uuid
+  scope           SuppressionScope
+  value           String
+  normalizedValue String            @map("normalized_value")
+  reason          SuppressionReason
+  source          String
+  leadId          String?           @map("lead_id") @db.Uuid
+  evidence        Json              @default("{}")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead Lead? @relation(fields: [leadId], references: [id])
+
+  @@unique([scope, normalizedValue])
+  @@index([normalizedValue])
+  @@map("opt_outs")
+  @@schema("acq")
+}
+
+// ---------------------------------------------------------- human loop
+
+model Approval {
+  id            String         @id @default(uuid()) @db.Uuid
+  kind          ApprovalKind
+  status        ApprovalStatus @default(PENDING)
+  leadId        String?        @map("lead_id") @db.Uuid
+  emailId       String?        @map("email_id") @db.Uuid
+  replyId       String?        @map("reply_id") @db.Uuid
+  title         String
+  payload       Json           @default("{}")
+  aiConfidence  Decimal?       @map("ai_confidence") @db.Decimal(4, 3)
+  requestedAt   DateTime       @default(now()) @map("requested_at") @db.Timestamptz(6)
+  decidedAt     DateTime?      @map("decided_at") @db.Timestamptz(6)
+  decidedBy     String?        @map("decided_by")
+  decisionNote  String?        @map("decision_note")
+  editedPayload Json?          @map("edited_payload")
+  expiresAt     DateTime       @map("expires_at") @db.Timestamptz(6)
+
+  lead  Lead?  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  reply Reply? @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@index([status, requestedAt])
+  @@map("approvals")
+  @@schema("acq")
+}
+
+model SalesActivity {
+  id           BigInt   @id @default(autoincrement())
+  leadId       String?  @map("lead_id") @db.Uuid
+  activityType String   @map("activity_type")
+  actor        Actor    @default(SYSTEM)
+  summary      String
+  payload      Json     @default("{}")
+  executionId  String?  @map("execution_id")
+  occurredAt   DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  lead Lead? @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, occurredAt])
+  @@index([activityType, occurredAt])
+  @@map("sales_activities")
+  @@schema("acq")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  channel   String
+  target    String
+  subject   String?
+  body      String
+  leadId    String?   @map("lead_id") @db.Uuid
+  /// Unique: a retried execution cannot notify twice for the same event.
+  dedupeKey String    @unique @map("dedupe_key")
+  status    String    @default("PENDING")
+  error     String?
+  sentAt    DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead Lead? @relation(fields: [leadId], references: [id])
+
+  @@map("notifications")
+  @@schema("acq")
+}
+
+model DemoBooking {
+  id              String    @id @default(uuid()) @db.Uuid
+  leadId          String?   @map("lead_id") @db.Uuid
+  provider        String
+  providerEventId String    @map("provider_event_id")
+  inviteeEmail    String?   @map("invitee_email")
+  inviteeName     String?   @map("invitee_name")
+  scheduledAt     DateTime? @map("scheduled_at") @db.Timestamptz(6)
+  durationMin     Int?      @map("duration_min")
+  joinUrl         String?   @map("join_url")
+  status          String    @default("BOOKED")
+  payload         Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  lead Lead? @relation(fields: [leadId], references: [id])
+
+  @@unique([provider, providerEventId])
+  @@map("demo_bookings")
+  @@schema("acq")
+}
+
+// ------------------------------------------------------ observability
+
+model Prompt {
+  key            String   @map("key")
+  version        String
+  purpose        String
+  systemPrompt   String   @map("system_prompt")
+  userTemplate   String   @map("user_template")
+  responseSchema Json     @map("response_schema")
+  temperature    Decimal  @default(0.20) @db.Decimal(3, 2)
+  /// Partial unique index enforces one active version per key.
+  active         Boolean  @default(false)
+  notes          String?
+  sourceFile     String?  @map("source_file")
+  loadedAt       DateTime @default(now()) @map("loaded_at") @db.Timestamptz(6)
+
+  @@id([key, version])
+  @@map("prompts")
+  @@schema("acq")
+}
+
+model AiCall {
+  id            BigInt   @id @default(autoincrement())
+  purpose       String
+  model         String
+  leadId        String?  @map("lead_id") @db.Uuid
+  promptVersion String?  @map("prompt_version")
+  inputTokens   Int?     @map("input_tokens")
+  outputTokens  Int?     @map("output_tokens")
+  costUsd       Decimal? @map("cost_usd") @db.Decimal(10, 6)
+  latencyMs     Int?     @map("latency_ms")
+  ok            Boolean  @default(true)
+  error         String?
+  executionId   String?  @map("execution_id")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead Lead? @relation(fields: [leadId], references: [id])
+
+  @@index([createdAt])
+  @@index([purpose, createdAt])
+  @@map("ai_calls")
+  @@schema("acq")
+}
+
+model WorkflowRun {
+  id          BigInt    @id @default(autoincrement())
+  workflowKey String    @map("workflow_key")
+  executionId String?   @map("execution_id")
+  status      String    @default("RUNNING")
+  itemsIn     Int?      @map("items_in")
+  itemsOut    Int?      @map("items_out")
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(6)
+  error       String?
+  meta        Json      @default("{}")
+
+  @@index([workflowKey, startedAt])
+  @@map("workflow_runs")
+  @@schema("acq")
+}
+
+/// Nothing is ever silently lost: anything unrecoverable lands here.
+model DeadLetter {
+  id          BigInt    @id @default(autoincrement())
+  workflowKey String    @map("workflow_key")
+  executionId String?   @map("execution_id")
+  nodeName    String?   @map("node_name")
+  leadId      String?   @map("lead_id") @db.Uuid
+  emailId     String?   @map("email_id") @db.Uuid
+  error       String
+  payload     Json      @default("{}")
+  retryCount  Int       @default(0) @map("retry_count")
+  resolvedAt  DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedBy  String?   @map("resolved_by")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead  Lead?  @relation(fields: [leadId], references: [id])
+  email Email? @relation(fields: [emailId], references: [id])
+
+  @@index([createdAt])
+  @@map("dead_letters")
+  @@schema("acq")
+}
