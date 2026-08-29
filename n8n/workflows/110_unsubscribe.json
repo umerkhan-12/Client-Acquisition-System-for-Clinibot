@@ -1,0 +1,182 @@
+{
+  "name": "ACQ 110 \u2014 Unsubscribe",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "unsubscribe",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wf110-00",
+      "name": "Unsubscribe Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "notes": "Set unsubscribe.base_url in acq.settings to this webhook's production URL. Until it is set, workflow 50 refuses to send anything.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One click, no confirmation, no login. Unsubscribing must be easier than\n-- replying, or it is not a real opt-out.\nWITH found AS (\n  SELECT id, lead_id, to_email\n    FROM acq.emails\n   WHERE unsubscribe_token = $1 AND $1 <> ''\n   LIMIT 1\n)\nSELECT\n  COALESCE((SELECT true FROM found), false) AS found,\n  (SELECT to_email FROM found)              AS address,\n  (SELECT clinic_name FROM acq.leads\n    WHERE id = (SELECT lead_id FROM found)) AS clinic_name,\n  (SELECT acq.apply_opt_out('EMAIL', to_email::text, 'OPT_OUT_REQUEST', 'LIST_UNSUB',\n                            lead_id, jsonb_build_object('via', 'unsubscribe_link'))\n     FROM found)                            AS opt_out_id",
+        "options": {
+          "queryReplacement": "={{ [ ($json.query?.t || '') ] }}"
+        }
+      },
+      "id": "wf110-01",
+      "name": "Apply Opt-Out",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nconst ok = j.found === true;\n\nconst body = ok\n  ? `<h1>You're unsubscribed</h1>\n     <p>We've removed <strong>${j.address}</strong> from our list. You won't hear from us again.</p>\n     <p>Sorry for the interruption.</p>`\n  : `<h1>Link not recognised</h1>\n     <p>This unsubscribe link is not valid, or has already been used.</p>\n     <p>If you're still receiving email from us, reply to any message with\n        \"unsubscribe\" and we'll remove you by hand.</p>`;\n\nconst html = `<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Unsubscribe</title>\n<style>\n  body { font: 16px/1.6 system-ui, -apple-system, \"Segoe UI\", sans-serif;\n         max-width: 34rem; margin: 4rem auto; padding: 0 1.5rem; color: #1a1a1a; }\n  h1 { font-size: 1.4rem; margin-bottom: .75rem; }\n  p { color: #444; }\n  footer { margin-top: 2.5rem; font-size: .85rem; color: #777;\n           border-top: 1px solid #e5e5e5; padding-top: 1rem; }\n  @media (prefers-color-scheme: dark) {\n    body { background: #141414; color: #ededed; }\n    p { color: #b4b4b4; }\n    footer { color: #8a8a8a; border-top-color: #2c2c2c; }\n  }\n</style></head>\n<body>${body}<footer>Zenvexa \u00b7 Clinibot</footer></body></html>`;\n\nreturn [{ json: { html, status: ok ? 200 : 404 } }];"
+      },
+      "id": "wf110-02",
+      "name": "Build Confirmation Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseCode": "={{ $json.status }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "wf110-03",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.sales_activities (lead_id, activity_type, actor, summary, payload, execution_id)\nSELECT l.id, 'UNSUBSCRIBED', 'PROSPECT', 'Unsubscribed via the link in an email',\n       jsonb_build_object('address', $1::text), $2\nFROM acq.leads l WHERE l.public_email = $1::citext",
+        "options": {
+          "queryReplacement": "={{ [ ($('Apply Opt-Out').first().json.address || ''), $execution.id ] }}"
+        }
+      },
+      "id": "wf110-04",
+      "name": "Log Opt-Out",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1140,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Unsubscribe Request": {
+      "main": [
+        [
+          {
+            "node": "Apply Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Opt-Out": {
+      "main": [
+        [
+          {
+            "node": "Build Confirmation Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Confirmation Page": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond": {
+      "main": [
+        [
+          {
+            "node": "Log Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf110"
+  }
+}

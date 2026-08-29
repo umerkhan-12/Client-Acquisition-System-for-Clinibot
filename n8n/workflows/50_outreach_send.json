@@ -1,0 +1,583 @@
+{
+  "name": "ACQ 50 \u2014 Outreach Send",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "wf50-00",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.id AS campaign_id, c.key, c.timezone,\n       m.from_email, m.from_name, m.reply_to,\n       (SELECT (value)::boolean FROM acq.settings WHERE key = 'outreach.dry_run')      AS dry_run,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'unsubscribe.base_url')  AS unsub_base,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'company.brand')         AS brand,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'company.website')       AS company_url,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'company.postal_address') AS postal_address\nFROM acq.campaigns c\nJOIN acq.mailboxes m ON m.id = c.mailbox_id\nWHERE c.status = 'ACTIVE' AND m.active",
+        "options": {}
+      },
+      "id": "wf50-01",
+      "name": "Active Campaigns",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT e.id AS email_id, e.lead_id, e.to_email, e.subject, e.body_text,\n       e.step_no, e.unsubscribe_token,\n       (SELECT clinic_name FROM acq.leads WHERE id = e.lead_id) AS clinic_name\nFROM acq.claim_send_slots($1::uuid, 5) e",
+        "options": {
+          "queryReplacement": "={{ [ $json.campaign_id ] }}"
+        }
+      },
+      "id": "wf50-02",
+      "name": "Claim Send Slots",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "Daily and hourly caps, the sending window, per-domain limits, the warm-up ramp and suppression are all applied inside this one transaction. Two overlapping runs cannot both think they have budget.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf50-03",
+      "name": "Per Email",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.is_sendable($1::uuid) AS check",
+        "options": {
+          "queryReplacement": "={{ [ $json.email_id ] }}"
+        }
+      },
+      "id": "wf50-04",
+      "name": "Final Pre-Send Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1140,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Catches a reply or opt-out that landed in the seconds between claiming the slot and reaching the SMTP call.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Still Sendable?-c",
+              "leftValue": "={{ $json.check.sendable }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf50-05",
+      "name": "Still Sendable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const e = $('Per Email').first().json;\nconst c = $('Active Campaigns').first().json;\n\nif (!String(c.postal_address || '').trim()) {\n  throw new Error('company.postal_address is empty. A real postal address is ' +\n                  'required in the footer before any outreach can be sent.');\n}\nif (!String(c.unsub_base || '').trim()) {\n  throw new Error('unsubscribe.base_url is empty. Deploy workflow 110 and set it ' +\n                  'before sending \u2014 an opt-out link that does not work is worse ' +\n                  'than none at all.');\n}\n\nconst unsubUrl = `${c.unsub_base}?t=${e.unsubscribe_token}`;\n\n// The token is a placeholder the model was told to leave in place. If it is\n// missing the guardrails already rejected the draft, so this is belt and braces.\nlet body = String(e.body_text);\nconst line = `If you'd rather not hear from me again, unsubscribe here: ${unsubUrl}`;\nbody = body.includes('{{UNSUBSCRIBE}}')\n  ? body.replace('{{UNSUBSCRIBE}}', line)\n  : `${body}\\n\\n${line}`;\n\nconst footer = [\n  '',\n  '--',\n  `${c.brand} \u00b7 ${c.company_url}`,\n  c.postal_address,\n].join('\\n');\n\nreturn [{ json: {\n  ...e,\n  from_email: c.from_email,\n  from_name: c.from_name,\n  reply_to: c.reply_to || c.from_email,\n  dry_run: !!c.dry_run,\n  final_body: body + footer,\n  // Our own correlation id. Note this is NOT the RFC 5322 Message-ID the MTA\n  // will assign \u2014 n8n's SMTP node cannot set custom headers. Inbound matching\n  // is by sender address first; see workflow 60.\n  correlation_id: `<acq-${e.email_id}@zenvexa.tech>`,\n}}];"
+      },
+      "id": "wf50-06",
+      "name": "Render Final Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Dry Run?-c",
+              "leftValue": "={{ $json.dry_run }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf50-07",
+      "name": "Dry Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.from_name + ' <' + $json.from_email + '>' }}",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.final_body }}",
+        "options": {
+          "replyTo": "={{ $json.reply_to }}",
+          "appendAttribution": false
+        }
+      },
+      "id": "wf50-08",
+      "name": "Send Email (SMTP)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2020,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP",
+          "name": "zenvexa-smtp"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "appendAttribution is off: n8n's default footer would misrepresent who sent the message.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: { ...j, dry_run_preview: j.final_body.slice(0, 400) } }];"
+      },
+      "id": "wf50-09",
+      "name": "Dry Run \u2014 Not Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_email_sent($1::uuid, $2, $3) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $('Render Final Email').first().json.email_id, $('Render Final Email').first().json.correlation_id, $execution.id ] }}"
+        }
+      },
+      "id": "wf50-10",
+      "name": "Record Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Also schedules the next follow-up and advances the lead's status.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_email_failed($1::uuid, $2, $3) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $('Render Final Email').first().json.email_id, ('smtp: ' + ($json.error?.message || $json.message || 'send failed')), $execution.id ] }}"
+        }
+      },
+      "id": "wf50-11",
+      "name": "Record Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2680,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Returns the email to READY_TO_SEND for two more attempts, then marks it FAILED and writes a dead letter.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE acq.emails SET status = 'CANCELLED', error = $2\n WHERE id = $1::uuid AND status = 'QUEUED'",
+        "options": {
+          "queryReplacement": "={{ [ $('Per Email').first().json.email_id, ('pre_send_check: ' + $json.check.reason) ] }}"
+        }
+      },
+      "id": "wf50-12",
+      "name": "Cancel Unsendable",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Emails leaving on an exact cadence look like what they are. A random gap of\n// 40-160 seconds between sends is both more natural and gentler on the mailbox.\nreturn [{ json: { wait_seconds: 40 + Math.floor(Math.random() * 120) } }];"
+      },
+      "id": "wf50-13",
+      "name": "Human Pacing Delay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.wait_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "wf50-14",
+      "name": "Wait (Jittered)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3340,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf50-15",
+      "name": "Send Batch Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3560,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Active Campaigns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Active Campaigns": {
+      "main": [
+        [
+          {
+            "node": "Claim Send Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Send Slots": {
+      "main": [
+        [
+          {
+            "node": "Per Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Email": {
+      "main": [
+        [
+          {
+            "node": "Send Batch Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Pre-Send Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Pre-Send Check": {
+      "main": [
+        [
+          {
+            "node": "Still Sendable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Sendable?": {
+      "main": [
+        [
+          {
+            "node": "Render Final Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel Unsendable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Unsendable": {
+      "main": [
+        [
+          {
+            "node": "Per Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Final Email": {
+      "main": [
+        [
+          {
+            "node": "Dry Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dry Run?": {
+      "main": [
+        [
+          {
+            "node": "Dry Run \u2014 Not Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Email (SMTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dry Run \u2014 Not Sent": {
+      "main": [
+        [
+          {
+            "node": "Human Pacing Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email (SMTP)": {
+      "main": [
+        [
+          {
+            "node": "Record Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Sent": {
+      "main": [
+        [
+          {
+            "node": "Human Pacing Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Failure": {
+      "main": [
+        [
+          {
+            "node": "Human Pacing Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human Pacing Delay": {
+      "main": [
+        [
+          {
+            "node": "Wait (Jittered)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait (Jittered)": {
+      "main": [
+        [
+          {
+            "node": "Per Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf50"
+  }
+}

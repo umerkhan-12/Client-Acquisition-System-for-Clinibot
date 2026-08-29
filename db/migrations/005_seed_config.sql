@@ -177,23 +177,83 @@ WHERE c.key = 'pk-karachi-tier1'
 ON CONFLICT (campaign_id, step_no) DO NOTHING;
 
 -- ---------------------------------------------------------------------
--- Discovery tasks: Karachi tier-1 areas × high-priority clinic categories
+-- Discovery tasks
 --
--- The lat/lng values are APPROXIMATE area centroids used only as search
--- centres for the Overpass/Places radius query. Tune them against a map
--- before the first production run; they do not represent any real business.
+-- The two providers want different task shapes, so they are seeded differently:
+--
+--   OSM       — one task per AREA. A single Overpass call returns every
+--               healthcare POI around a point, and the category is read off the
+--               tags afterwards. Splitting by category here would issue the same
+--               call eight times for the same neighbourhood.
+--
+--   PLACES    — one task per AREA x CATEGORY. Google's text search is driven by
+--               the query string, so "dental clinic" and "dermatology clinic"
+--               are genuinely different searches. Seeded DISABLED: enable them
+--               once a billing-enabled Places key exists.
+--
+-- The lat/lng values are APPROXIMATE area centroids used only as search centres.
+-- Tune them against a map before the first production run; they do not
+-- represent any real business.
 -- ---------------------------------------------------------------------
+
+-- Karachi tier-1 areas, free OSM discovery.
 INSERT INTO acq.discovery_tasks
   (market_id, city, area, query_term, category, provider, priority_tier, bbox, cadence_days, enabled)
 SELECT
-  m.id, a.city, a.area, q.query_term, q.category,
-  (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.default_provider'),
-  q.tier,
+  m.id, a.city, a.area, 'healthcare', 'ANY', 'OSM', 1,
   jsonb_build_object('type','around','lat',a.lat,'lng',a.lng,'radius_m',a.radius),
   30, true
 FROM acq.markets m
 CROSS JOIN (VALUES
-    -- Tier 1: Karachi
+    ('Karachi','North Nazimabad',   24.9400, 67.0400, 3500),
+    ('Karachi','Nazimabad',         24.9100, 67.0300, 3000),
+    ('Karachi','North Karachi',     24.9800, 67.0600, 4000),
+    ('Karachi','Gulshan-e-Iqbal',   24.9200, 67.0900, 4000),
+    ('Karachi','Gulistan-e-Johar',  24.9200, 67.1300, 4000),
+    ('Karachi','PECHS',             24.8700, 67.0600, 2500),
+    ('Karachi','Clifton',           24.8138, 67.0300, 3000),
+    ('Karachi','DHA',               24.8000, 67.0500, 5000),
+    ('Karachi','Bahadurabad',       24.8800, 67.0650, 2500),
+    ('Karachi','Federal B Area',    24.9300, 67.0700, 3500)
+  ) AS a(city, area, lat, lng, radius)
+WHERE m.code = 'PK'
+  AND NOT EXISTS (
+    SELECT 1 FROM acq.discovery_tasks d
+     WHERE d.city = a.city AND d.area = a.area AND d.provider = 'OSM'
+  );
+
+-- Tier-2 cities, slower cadence.
+INSERT INTO acq.discovery_tasks
+  (market_id, city, area, query_term, category, provider, priority_tier, bbox, cadence_days, enabled)
+SELECT
+  m.id, a.city, NULL, 'healthcare', 'ANY', 'OSM', 2,
+  jsonb_build_object('type','around','lat',a.lat,'lng',a.lng,'radius_m',a.radius),
+  45, true
+FROM acq.markets m
+CROSS JOIN (VALUES
+    ('Lahore',      31.5204, 74.3587, 12000),
+    ('Islamabad',   33.6844, 73.0479, 10000),
+    ('Rawalpindi',  33.5651, 73.0169, 10000)
+  ) AS a(city, lat, lng, radius)
+WHERE m.code = 'PK'
+  AND NOT EXISTS (
+    SELECT 1 FROM acq.discovery_tasks d
+     WHERE d.city = a.city AND d.area IS NULL AND d.provider = 'OSM'
+  );
+
+-- Google Places tasks: per area x category, DISABLED until a key is configured.
+-- OSM in Pakistan tags amenity=clinic/doctors/dentist reliably but rarely
+-- records healthcare:speciality, so specialty targeting (dermatology, cosmetic,
+-- fertility) really needs Places. Enable these when you are ready to pay for it:
+--   UPDATE acq.discovery_tasks SET enabled = true WHERE provider = 'GOOGLE_PLACES';
+INSERT INTO acq.discovery_tasks
+  (market_id, city, area, query_term, category, provider, priority_tier, bbox, cadence_days, enabled)
+SELECT
+  m.id, a.city, a.area, q.query_term, q.category, 'GOOGLE_PLACES', q.tier,
+  jsonb_build_object('type','around','lat',a.lat,'lng',a.lng,'radius_m',a.radius),
+  30, false
+FROM acq.markets m
+CROSS JOIN (VALUES
     ('Karachi','North Nazimabad',   24.9400, 67.0400, 3500),
     ('Karachi','Nazimabad',         24.9100, 67.0300, 3000),
     ('Karachi','North Karachi',     24.9800, 67.0600, 4000),
@@ -218,31 +278,6 @@ CROSS JOIN (VALUES
 WHERE m.code = 'PK'
   AND NOT EXISTS (
     SELECT 1 FROM acq.discovery_tasks d
-     WHERE d.city = a.city AND d.area = a.area AND d.category = q.category
-  );
-
--- Tier 2 cities, seeded but running on a slower cadence.
-INSERT INTO acq.discovery_tasks
-  (market_id, city, area, query_term, category, provider, priority_tier, bbox, cadence_days, enabled)
-SELECT
-  m.id, a.city, NULL, q.query_term, q.category,
-  (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.default_provider'),
-  2,
-  jsonb_build_object('type','around','lat',a.lat,'lng',a.lng,'radius_m',a.radius),
-  45, true
-FROM acq.markets m
-CROSS JOIN (VALUES
-    ('Lahore',      31.5204, 74.3587, 12000),
-    ('Islamabad',   33.6844, 73.0479, 10000),
-    ('Rawalpindi',  33.5651, 73.0169, 10000)
-  ) AS a(city, lat, lng, radius)
-CROSS JOIN (VALUES
-    ('dental clinic',      'DENTAL',      1),
-    ('dermatology clinic', 'DERMATOLOGY', 1),
-    ('cosmetic clinic',    'COSMETIC',    1)
-  ) AS q(query_term, category, tier)
-WHERE m.code = 'PK'
-  AND NOT EXISTS (
-    SELECT 1 FROM acq.discovery_tasks d
-     WHERE d.city = a.city AND d.area IS NULL AND d.category = q.category
+     WHERE d.city = a.city AND d.area = a.area
+       AND d.category = q.category AND d.provider = 'GOOGLE_PLACES'
   );

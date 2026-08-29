@@ -1,0 +1,732 @@
+{
+  "name": "ACQ 10 \u2014 Lead Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "wf10-00",
+      "name": "Every Weekday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  now()                                                             AS started_at,\n  COALESCE((SELECT sum(cost_usd) FROM acq.ai_calls\n             WHERE created_at::date = CURRENT_DATE), 0)             AS spent_today,\n  (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.daily_cost_cap_usd')      AS cap,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_tasks_per_run')     AS max_tasks,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_new_leads_per_run') AS max_new,\n  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'discovery.crawl_user_agent')      AS user_agent",
+        "options": {}
+      },
+      "id": "wf10-01",
+      "name": "Check Budget + Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Within Budget?-c",
+              "leftValue": "={{ $json.spent_today < $json.cap }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf10-02",
+      "name": "Within Budget?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at, error, meta)\nVALUES ('10_lead_discovery', $1, 'ERROR', now(), 'daily_cost_cap_reached', $2::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id, JSON.stringify({ spent_today: $json.spent_today, cap: $json.cap }) ] }}"
+        }
+      },
+      "id": "wf10-03",
+      "name": "Log Budget Halt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd to resume.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, city, area, query_term, category, provider, priority_tier, bbox,\n       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code\nFROM acq.next_discovery_tasks($1::int) d",
+        "options": {
+          "queryReplacement": "={{ [ $json.max_tasks ] }}"
+        }
+      },
+      "id": "wf10-04",
+      "name": "Claim Discovery Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1140,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "next_discovery_tasks() claims and reschedules atomically, so two overlapping runs never process the same area twice.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf10-05",
+      "name": "Per Task",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Provider-0",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "OSM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "OSM"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Provider-1",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "GOOGLE_PLACES",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "GOOGLE_PLACES"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "wf10-06",
+      "name": "Route Provider",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const t = $input.first().json;\nconst bb = t.bbox || {};\nconst lat = bb.lat, lng = bb.lng, r = bb.radius_m || 3000;\n\nif (lat == null || lng == null) {\n  throw new Error(`Discovery task ${t.id} has no usable search centre in bbox.`);\n}\n\n// One call returns every healthcare POI around the point; the category is read\n// off the tags afterwards. `nwr` covers nodes, ways and relations.\nconst q = `[out:json][timeout:60];\n(\n  nwr[\"amenity\"~\"^(clinic|doctors|dentist)$\"](around:${r},${lat},${lng});\n  nwr[\"healthcare\"](around:${r},${lat},${lng});\n);\nout center tags 300;`;\n\nreturn [{ json: { ...t, overpass_query: q } }];"
+      },
+      "id": "wf10-07",
+      "name": "Build Overpass Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://overpass-api.de/api/interpreter",
+        "options": {
+          "timeout": 90000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $('Check Budget + Settings').first().json.user_agent }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "data",
+              "value": "={{ $json.overpass_query }}"
+            }
+          ]
+        }
+      },
+      "id": "wf10-08",
+      "name": "Overpass API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2020,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Overpass is a free volunteer service. One call per area, a pause between calls, and an honest User-Agent are the terms of using it \u2014 do not raise the rate.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const task = $('Build Overpass Query').first().json;\nconst maxNew = $('Check Budget + Settings').first().json.max_new || 60;\nconst resp = $input.first().json;\nconst body = resp.body ?? resp;\nconst elements = body.elements || [];\n\n// Tag-driven category assignment. Falls back to name keywords because OSM in\n// Pakistan reliably records amenity=clinic/doctors/dentist but rarely records\n// healthcare:speciality.\nfunction categorize(tags, name) {\n  const spec = (tags['healthcare:speciality'] || '').toLowerCase();\n  const hc = (tags.healthcare || '').toLowerCase();\n  const am = (tags.amenity || '').toLowerCase();\n  const n = (name || '').toLowerCase();\n  const has = (...w) => w.some(x => spec.includes(x) || n.includes(x));\n\n  if (am === 'dentist' || hc === 'dentist' || has('dental', 'dentist', 'orthodont'))\n    return ['DENTAL', 1];\n  if (has('dermatolog', 'skin')) return ['DERMATOLOGY', 1];\n  if (has('plastic_surgery', 'plastic surgery', 'cosmetic surgery')) return ['PLASTIC_SURGERY', 1];\n  if (has('cosmetic', 'aesthetic', 'laser', 'hair transplant')) return ['AESTHETIC', 1];\n  if (has('fertility', 'ivf', 'gynaecolog', 'gynecolog')) return ['FERTILITY', 1];\n  if (hc === 'physiotherapist' || has('physiotherap', 'physical therapy')) return ['PHYSIOTHERAPY', 1];\n  if (has('eye', 'ophthalm', 'ent ', 'cardiolog', 'orthoped', 'urolog', 'neurolog'))\n    return ['SPECIALIST', 1];\n  if (hc === 'laboratory' || has('diagnostic', 'laborator', 'radiolog', 'imaging'))\n    return ['DIAGNOSTIC', 2];\n  if (am === 'clinic' || am === 'doctors' || hc === 'doctor') return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\n\nconst out = [];\nfor (const el of elements) {\n  const tags = el.tags || {};\n  const name = (tags.name || tags['name:en'] || '').trim();\n\n  // No name means nothing citable to write about, and nothing to deduplicate on.\n  if (!name) continue;\n\n  // Hospitals and government facilities are out of scope by design.\n  if ((tags.amenity || '') === 'hospital') continue;\n\n  const [category, tier] = categorize(tags, name);\n  const osmUrl = `https://www.openstreetmap.org/${el.type}/${el.id}`;\n  const email = tags['contact:email'] || tags.email || null;\n  const website = tags['contact:website'] || tags.website || null;\n  const phone = tags['contact:phone'] || tags.phone || null;\n  const whatsapp = tags['contact:whatsapp'] || tags.whatsapp || null;\n\n  const contacts = [];\n  if (email)    contacts.push({ contact_type: 'EMAIL',    value: email,    source: 'OSM', source_url: osmUrl, is_primary: true });\n  if (phone)    contacts.push({ contact_type: 'PHONE',    value: phone,    source: 'OSM', source_url: osmUrl });\n  if (whatsapp) contacts.push({ contact_type: 'WHATSAPP', value: whatsapp, source: 'OSM', source_url: osmUrl });\n\n  out.push({ json: {\n    market_code: task.market_code,\n    clinic_name: name,\n    website,\n    city: task.city,\n    area: task.area || tags['addr:suburb'] || null,\n    address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:suburb']]\n               .filter(Boolean).join(' ') || null,\n    lat: String(el.lat ?? el.center?.lat ?? ''),\n    lng: String(el.lon ?? el.center?.lon ?? ''),\n    phone,\n    whatsapp,\n    // An email tagged in OSM is publicly published data with a citable URL,\n    // so it carries real provenance. Anything without both is dropped by\n    // acq.upsert_lead rather than guessed at.\n    public_email: email,\n    email_source: email ? 'OSM' : null,\n    email_evidence_url: email ? osmUrl : null,\n    category,\n    priority_tier: tier,\n    source: 'OSM',\n    source_url: osmUrl,\n    source_ref: `${el.type}/${el.id}`,\n    source_ref_type: 'OSM_ID',\n    contacts,\n    raw: { OSM: { tags, element_type: el.type, element_id: el.id } },\n  }});\n  if (out.length >= maxNew) break;\n}\nreturn out;"
+      },
+      "id": "wf10-09",
+      "name": "Normalize OSM Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://places.googleapis.com/v1/places:searchText",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Goog-FieldMask",
+              "value": "places.id,places.displayName,places.formattedAddress,places.primaryType"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ textQuery: $json.query_term + ' in ' + ($json.area ? $json.area + ', ' : '') + $json.city, maxResultCount: 20, locationBias: { circle: { center: { latitude: $json.bbox.lat, longitude: $json.bbox.lng }, radius: $json.bbox.radius_m } } }) }}"
+      },
+      "id": "wf10-10",
+      "name": "Places Text Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "REPLACE_PLACES",
+          "name": "google-places-key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Cheapest field mask on purpose. Enriching fields are fetched per business in the Details call below, only for new businesses.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const task = $('Per Task').first().json;\nconst resp = $input.first().json;\nconst body = resp.body ?? resp;\n\nif (resp.statusCode && resp.statusCode >= 300) {\n  throw new Error(`Places search failed ${resp.statusCode}: ` +\n                  JSON.stringify(body?.error || body).slice(0, 400));\n}\n\nconst places = body.places || [];\nreturn [{ json: {\n  task,\n  place_ids: places.map(p => p.id).filter(Boolean),\n  found: places.length,\n  by_id: Object.fromEntries(places.map(p => [p.id, p])),\n}}];"
+      },
+      "id": "wf10-11",
+      "name": "Collect Place IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ref\nFROM acq.filter_unknown_refs('PLACE_ID',\n       ARRAY(SELECT jsonb_array_elements_text($1::jsonb)))",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json.place_ids) }}"
+        }
+      },
+      "id": "wf10-12",
+      "name": "Drop Already-Known Places",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "THE cost lever. Place Details is billed per call; this removes every business already in the CRM before a single Details request is made.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://places.googleapis.com/v1/places/{{ $json.ref }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Goog-FieldMask",
+              "value": "id,displayName,formattedAddress,location,websiteUri,internationalPhoneNumber,nationalPhoneNumber,primaryType,userRatingCount,rating,editorialSummary,businessStatus"
+            }
+          ]
+        }
+      },
+      "id": "wf10-13",
+      "name": "Place Details (new only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        300
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "REPLACE_PLACES",
+          "name": "google-places-key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const task = $('Per Task').first().json;\nconst resp = $input.first().json;\nconst p = resp.body ?? resp;\n\nif (!p || !p.id) return [];\nif (p.businessStatus && p.businessStatus !== 'OPERATIONAL') return [];\n\nconst name = p.displayName?.text || '';\nif (!name) return [];\nif (/\\b(hospital|medical centre complex|trust)\\b/i.test(name)) return [];\n\nconst mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;\nconst phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;\n\nfunction categorize(type, n) {\n  const s = `${type || ''} ${n}`.toLowerCase();\n  if (/dental|dentist|orthodont/.test(s))            return ['DENTAL', 1];\n  if (/dermatolog|skin/.test(s))                     return ['DERMATOLOGY', 1];\n  if (/plastic surgery|plastic_surgeon/.test(s))     return ['PLASTIC_SURGERY', 1];\n  if (/cosmetic|aesthetic|laser|hair transplant/.test(s)) return ['AESTHETIC', 1];\n  if (/fertility|ivf/.test(s))                       return ['FERTILITY', 1];\n  if (/physiotherap|physical_therapist/.test(s))     return ['PHYSIOTHERAPY', 1];\n  if (/diagnostic|laborator|radiolog/.test(s))       return ['DIAGNOSTIC', 2];\n  if (/doctor|clinic|physician/.test(s))             return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\nconst [category, tier] = categorize(p.primaryType, name);\n\nconst contacts = [];\nif (phone) contacts.push({ contact_type: 'PHONE', value: phone,\n                           source: 'GOOGLE_BUSINESS', source_url: mapsUrl });\n\n// Google Places does not expose email addresses. None is invented here; if the\n// clinic publishes one on its own site, workflow 30 reads it there with the\n// page URL recorded as evidence.\nreturn [{ json: {\n  market_code: task.market_code,\n  clinic_name: name,\n  website: p.websiteUri || null,\n  city: task.city,\n  area: task.area || null,\n  address: p.formattedAddress || null,\n  lat: String(p.location?.latitude ?? ''),\n  lng: String(p.location?.longitude ?? ''),\n  phone,\n  public_email: null,\n  category: category === 'OTHER' ? (task.category === 'ANY' ? 'OTHER' : task.category) : category,\n  priority_tier: tier,\n  source: 'GOOGLE_PLACES',\n  source_url: mapsUrl,\n  source_ref: p.id,\n  source_ref_type: 'PLACE_ID',\n  contacts,\n  raw: { GOOGLE_PLACES: {\n    userRatingCount: p.userRatingCount ?? 0,\n    rating: p.rating ?? null,\n    primaryType: p.primaryType ?? null,\n    editorialSummary: p.editorialSummary?.text ?? null,\n  }},\n}}];"
+      },
+      "id": "wf10-14",
+      "name": "Normalize Place Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.upsert_lead($1::jsonb) AS result",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "id": "wf10-15",
+      "name": "Upsert Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3560,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "One entry point for every source. Deduplication, provenance checking and contact recording all happen inside this call.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 4,
+        "unit": "seconds"
+      },
+      "id": "wf10-16",
+      "name": "Pause Between Areas",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3780,
+        300
+      ],
+      "notes": "Politeness delay for Overpass and a natural rate limit for Places.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, finished_at, meta)\nVALUES ('10_lead_discovery', $1, 'SUCCESS',\n        (SELECT count(*) FROM acq.leads WHERE created_at >= $2::timestamptz),\n        now(), jsonb_build_object('note','items_out counts leads created since run start'))",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id, $('Check Budget + Settings').first().json.started_at ] }}"
+        }
+      },
+      "id": "wf10-17",
+      "name": "Record Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every Weekday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Check Budget + Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Budget + Settings": {
+      "main": [
+        [
+          {
+            "node": "Within Budget?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Within Budget?": {
+      "main": [
+        [
+          {
+            "node": "Claim Discovery Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Budget Halt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Discovery Tasks": {
+      "main": [
+        [
+          {
+            "node": "Per Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Task": {
+      "main": [
+        [
+          {
+            "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route Provider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Provider": {
+      "main": [
+        [
+          {
+            "node": "Build Overpass Query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Places Text Search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pause Between Areas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Overpass Query": {
+      "main": [
+        [
+          {
+            "node": "Overpass API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Overpass API": {
+      "main": [
+        [
+          {
+            "node": "Normalize OSM Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize OSM Results": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Places Text Search": {
+      "main": [
+        [
+          {
+            "node": "Collect Place IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Place IDs": {
+      "main": [
+        [
+          {
+            "node": "Drop Already-Known Places",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drop Already-Known Places": {
+      "main": [
+        [
+          {
+            "node": "Place Details (new only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Place Details (new only)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Place Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Place Details": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Lead": {
+      "main": [
+        [
+          {
+            "node": "Pause Between Areas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pause Between Areas": {
+      "main": [
+        [
+          {
+            "node": "Per Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf10"
+  }
+}

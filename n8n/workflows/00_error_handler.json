@@ -1,0 +1,236 @@
+{
+  "name": "ACQ 00 \u2014 Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "wf00-00",
+      "name": "On Any Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// n8n hands the error trigger a single item describing the failed execution.\nconst e = $input.first().json;\nconst wf = e.workflow || {};\nconst ex = e.execution || {};\nconst err = ex.error || e.error || {};\n\n// Some failures are noisy but self-healing (a transient 429, a dropped socket).\n// They are still recorded, but they do not wake anyone up at 3am.\nconst message = String(err.message || 'unknown error');\nconst transient = /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|rate limit|429|503|502|504/i\n  .test(message);\n\nreturn [{\n  json: {\n    workflow_key: wf.name || 'unknown',\n    workflow_id: wf.id || null,\n    execution_id: ex.id || null,\n    node_name: err.node?.name || ex.lastNodeExecuted || null,\n    error: message.slice(0, 2000),\n    stack: String(err.stack || '').slice(0, 4000),\n    transient,\n    alert: !transient,\n    payload: JSON.stringify({\n      mode: ex.mode || null,\n      retryOf: ex.retryOf || null,\n      url: ex.url || null,\n    }),\n  },\n}];"
+      },
+      "id": "wf00-01",
+      "name": "Shape Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, error, payload)\nVALUES ($1, $2, $3, $4, $5::jsonb)\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.workflow_key, $json.execution_id, $json.node_name, $json.error, $json.payload ] }}"
+        }
+      },
+      "id": "wf00-02",
+      "name": "Record Dead Letter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "If this insert itself fails the execution is still visible in n8n's own log.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Worth Waking Someone?-c",
+              "leftValue": "={{ $('Shape Error').first().json.alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf00-03",
+      "name": "Worth Waking Someone?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT value #>> '{}' AS chat_id FROM acq.settings WHERE key = 'notify.telegram_chat_id'",
+        "options": {}
+      },
+      "id": "wf00-04",
+      "name": "Get Alert Target",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1140,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ '\u26a0\ufe0f *Workflow failed*\\n\\n' + '*Workflow:* ' + $('Shape Error').first().json.workflow_key + '\\n' + '*Node:* ' + ($('Shape Error').first().json.node_name || 'n/a') + '\\n' + '*Execution:* ' + ($('Shape Error').first().json.execution_id || 'n/a') + '\\n\\n' + '```\\n' + $('Shape Error').first().json.error.slice(0, 600) + '\\n```' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "wf00-05",
+      "name": "Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM",
+          "name": "acq-telegram"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Telegram failing must never mask the original error, so this node continues on failure \u2014 the dead letter row is already written.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf00-06",
+      "name": "Transient \u2014 Logged Only",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "On Any Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Shape Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Error": {
+      "main": [
+        [
+          {
+            "node": "Record Dead Letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Dead Letter": {
+      "main": [
+        [
+          {
+            "node": "Worth Waking Someone?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worth Waking Someone?": {
+      "main": [
+        [
+          {
+            "node": "Get Alert Target",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Transient \u2014 Logged Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Alert Target": {
+      "main": [
+        [
+          {
+            "node": "Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf00"
+  }
+}

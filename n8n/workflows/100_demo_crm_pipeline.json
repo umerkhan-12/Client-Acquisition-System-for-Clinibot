@@ -1,0 +1,422 @@
+{
+  "name": "ACQ 100 \u2014 Demo & CRM Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "demo-booked",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wf100-00",
+      "name": "Booking Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        120
+      ],
+      "notes": "Point Cal.com or Calendly at this URL. Both post a JSON body on booking.created / invitee.created.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Handles both Cal.com and Calendly shapes without assuming which one is wired up.\nconst body = $input.first().json.body ?? $input.first().json;\nconst type = body.triggerEvent || body.event || 'unknown';\nconst p = body.payload || body;\n\nconst invitee = p.invitee || p.attendees?.[0] || p.responses || {};\nconst email = String(\n  invitee.email || p.email || p.attendees?.[0]?.email || ''\n).toLowerCase();\n\nconst startTime = p.startTime || p.start_time || p.scheduled_event?.start_time || null;\nconst eventId = String(\n  p.uid || p.id || p.uri || p.bookingId || `${email}:${startTime}`\n);\n\nconst cancelled = /cancel/i.test(type);\nconst rescheduled = /reschedul/i.test(type);\n\nreturn [{ json: {\n  provider: body.triggerEvent ? 'CAL_COM' : 'CALENDLY',\n  provider_event_id: eventId,\n  invitee_email: email,\n  invitee_name: invitee.name || p.name || '',\n  scheduled_at: startTime,\n  duration_min: p.length || p.duration || null,\n  join_url: p.meetingUrl || p.location || p.scheduled_event?.location?.join_url || null,\n  status: cancelled ? 'CANCELLED' : (rescheduled ? 'RESCHEDULED' : 'BOOKED'),\n  raw: body,\n}}];"
+      },
+      "id": "wf100-01",
+      "name": "Parse Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH matched AS (\n  SELECT l.id AS lead_id\n  FROM acq.leads l\n  WHERE l.public_email = $3::citext\n  UNION\n  SELECT r.lead_id FROM acq.replies r WHERE r.from_email = $3::citext AND r.lead_id IS NOT NULL\n  LIMIT 1\n),\nbooked AS (\n  INSERT INTO acq.demo_bookings (lead_id, provider, provider_event_id, invitee_email,\n                                 invitee_name, scheduled_at, duration_min, join_url,\n                                 status, payload)\n  SELECT (SELECT lead_id FROM matched), $1, $2, $3::citext, $4,\n         NULLIF($5,'')::timestamptz, NULLIF($6,'')::int, NULLIF($7,''), $8, $9::jsonb\n  ON CONFLICT (provider, provider_event_id) DO UPDATE\n    SET status = EXCLUDED.status, scheduled_at = EXCLUDED.scheduled_at, updated_at = now()\n  RETURNING id, lead_id, status\n)\nSELECT b.id, b.lead_id, b.status,\n       CASE WHEN b.lead_id IS NOT NULL AND b.status <> 'CANCELLED'\n            THEN acq.transition_lead(b.lead_id, 'DEMO_BOOKED', 'demo_booked', 'SYSTEM')\n       END AS moved,\n       CASE WHEN b.lead_id IS NOT NULL\n            THEN acq.stop_follow_ups(b.lead_id, 'demo_booked')\n       END AS cancelled_followups,\n       (SELECT clinic_name FROM acq.leads WHERE id = b.lead_id) AS clinic_name\nFROM booked b",
+        "options": {
+          "queryReplacement": "={{ [ $json.provider, $json.provider_event_id, $json.invitee_email, $json.invitee_name, ($json.scheduled_at || ''), String($json.duration_min || ''), ($json.join_url || ''), $json.status, JSON.stringify($json.raw) ] }}"
+        }
+      },
+      "id": "wf100-02",
+      "name": "Record Booking",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "Booking with an address we never emailed still gets recorded, with a null lead_id, rather than being discarded.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Load Notify Target').first().json.chat_id }}",
+        "text": "={{ '\ud83d\udcc5 *Demo ' + $json.status.toLowerCase() + '*\\n\\n' + '*Clinic:* ' + ($json.clinic_name || $('Parse Booking').first().json.invitee_email) + '\\n' + '*When:* ' + ($('Parse Booking').first().json.scheduled_at || 'unspecified') + '\\n' + ($json.lead_id ? '' : '\\n_Not matched to a known lead._') }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "wf100-03",
+      "name": "Announce Booking",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM",
+          "name": "acq-telegram"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT value #>> '{}' AS chat_id FROM acq.settings WHERE key = 'notify.telegram_chat_id'",
+        "options": {}
+      },
+      "id": "wf100-04",
+      "name": "Load Notify Target",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "wf100-05",
+      "name": "Daily Digest 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT row_to_json(o) FROM acq.v_overview o)                            AS overview,\n  (SELECT json_agg(f ORDER BY f.stage) FROM acq.v_funnel f)                AS funnel,\n  (SELECT row_to_json(d) FROM acq.v_daily_metrics d LIMIT 1)               AS today,\n  (SELECT json_agg(row_to_json(x)) FROM acq.v_deliverability x)            AS deliverability,\n  (SELECT count(*) FROM acq.approvals WHERE status = 'PENDING')            AS pending_approvals,\n  (SELECT count(*) FROM acq.dead_letters WHERE resolved_at IS NULL)        AS open_dead_letters",
+        "options": {}
+      },
+      "id": "wf100-06",
+      "name": "Collect Metrics",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const m = $input.first().json;\nconst o = m.overview || {};\nconst t = m.today || {};\nconst d = (m.deliverability || [])[0] || {};\n\n// Deliverability thresholds worth waking up to. Above ~2% bounce or ~0.1%\n// complaint, a young sending domain starts getting filtered, and the fix is to\n// stop sending, not to send more carefully.\nconst warnings = [];\nif (Number(d.bounce_rate_pct) > 2)     warnings.push(`\u26a0\ufe0f Bounce rate ${d.bounce_rate_pct}% \u2014 pause and clean the list.`);\nif (Number(d.complaint_rate_pct) > 0.1) warnings.push(`\ud83d\udea8 Complaint rate ${d.complaint_rate_pct}% \u2014 stop sending now.`);\nif (Number(m.open_dead_letters) > 0)   warnings.push(`${m.open_dead_letters} unresolved dead letters.`);\nif (Number(m.pending_approvals) > 0)   warnings.push(`${m.pending_approvals} drafts waiting for your approval.`);\n\nconst text = [\n  '\ud83d\udcca *Daily pipeline*',\n  '',\n  `Sent today: *${t.emails_sent ?? 0}*   Replies: *${t.replies ?? 0}*   Bounces: *${t.hard_bounces ?? 0}*`,\n  `AI spend today: *$${Number(t.ai_cost_usd ?? 0).toFixed(3)}*`,\n  '',\n  `Leads: ${o.total_leads ?? 0} \u00b7 Qualified: ${o.qualified_leads ?? 0} \u00b7 Contacted: ${o.emails_sent ?? 0}`,\n  `Replies: ${o.replies ?? 0} \u00b7 Interested: ${o.interested ?? 0} \u00b7 Demos: ${o.demos ?? 0} \u00b7 Customers: ${o.customers ?? 0}`,\n  `Reply rate: ${o.reply_rate_pct ?? 0}%  \u00b7  Opt-outs: ${o.opt_outs ?? 0}`,\n  '',\n  `Deliverability \u2014 bounce ${d.bounce_rate_pct ?? 0}% \u00b7 complaint ${d.complaint_rate_pct ?? 0}% \u00b7 sent today ${d.sent_today ?? 0}/${d.effective_daily_cap ?? 0}`,\n  warnings.length ? `\\n${warnings.join('\\n')}` : '\\n\u2705 Nothing needs your attention.',\n].join('\\n');\n\nreturn [{ json: { text } }];"
+      },
+      "id": "wf100-07",
+      "name": "Format Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Load Notify Target 2').first().json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "wf100-08",
+      "name": "Send Digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM",
+          "name": "acq-telegram"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT value #>> '{}' AS chat_id FROM acq.settings WHERE key = 'notify.telegram_chat_id'",
+        "options": {}
+      },
+      "id": "wf100-09",
+      "name": "Load Notify Target 2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "wf100-10",
+      "name": "Nightly Sweep 02:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Three kinds of stuck state, all self-healing:\nWITH unlocked AS (\n  -- 1. leads left locked by an execution that died mid-run\n  UPDATE acq.leads SET locked_by = NULL, locked_at = NULL\n   WHERE locked_at < now() - interval '2 hours'\n  RETURNING 1\n),\nstuck AS (\n  -- 2. leads that entered RESEARCHING and never came out\n  UPDATE acq.leads SET status = 'QUALIFIED', status_reason = 'sweeper:stuck_in_researching'\n   WHERE status = 'RESEARCHING' AND updated_at < now() - interval '1 day'\n  RETURNING 1\n),\nexpired AS (\n  -- 3. approvals nobody acted on\n  UPDATE acq.approvals SET status = 'EXPIRED'\n   WHERE status = 'PENDING' AND expires_at < now()\n  RETURNING 1\n)\nSELECT (SELECT count(*) FROM unlocked) AS locks_released,\n       (SELECT count(*) FROM stuck)    AS leads_unstuck,\n       (SELECT count(*) FROM expired)  AS approvals_expired",
+        "options": {}
+      },
+      "id": "wf100-11",
+      "name": "Release Stale Locks & Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        700
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at, meta)\nVALUES ('100_nightly_sweep', $1, 'SUCCESS', now(), $2::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id, JSON.stringify($json) ] }}"
+        }
+      },
+      "id": "wf100-12",
+      "name": "Log Sweep",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        700
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Booking Webhook": {
+      "main": [
+        [
+          {
+            "node": "Load Notify Target",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Notify Target": {
+      "main": [
+        [
+          {
+            "node": "Parse Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Booking": {
+      "main": [
+        [
+          {
+            "node": "Record Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Booking": {
+      "main": [
+        [
+          {
+            "node": "Announce Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Digest 18:00": {
+      "main": [
+        [
+          {
+            "node": "Load Notify Target 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Notify Target 2": {
+      "main": [
+        [
+          {
+            "node": "Collect Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Metrics": {
+      "main": [
+        [
+          {
+            "node": "Format Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nightly Sweep 02:00": {
+      "main": [
+        [
+          {
+            "node": "Release Stale Locks & Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Stale Locks & Leads": {
+      "main": [
+        [
+          {
+            "node": "Log Sweep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf100"
+  }
+}

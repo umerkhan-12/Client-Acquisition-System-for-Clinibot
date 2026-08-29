@@ -1,0 +1,527 @@
+{
+  "name": "ACQ 01 \u2014 AI Call",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "wf01-00",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.get_prompt($1) AS prompt,\n       (SELECT jsonb_object_agg(key, value) FROM acq.settings\n         WHERE key IN ('company.brand','company.product','company.sender_person',\n                       'product.capabilities','demo.booking_url','ai.model','ai.pricing')\n       ) AS settings",
+        "options": {
+          "queryReplacement": "={{ $json.prompt_key }}"
+        }
+      },
+      "id": "wf01-01",
+      "name": "Load Prompt + Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function sanitizeSchema(s) {\n  if (Array.isArray(s)) return s.map(sanitizeSchema);\n  if (s === null || typeof s !== 'object') return s;\n  const drop = new Set([\n    'additionalProperties', 'maxLength', 'minLength', 'pattern',\n    '$schema', 'definitions', '$ref', 'default', 'examples',\n    'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',\n  ]);\n  const out = {};\n  for (const [k, v] of Object.entries(s)) {\n    if (drop.has(k)) continue;\n    out[k] = (k === 'properties')\n      ? Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, sanitizeSchema(pv)]))\n      : sanitizeSchema(v);\n  }\n  return out;\n}\n\nfunction render(tpl, vars) {\n  return String(tpl).replace(/\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}/g, (m, k) => {\n    if (!(k in vars)) return m;              // leave unknown tokens intact\n    const v = vars[k];\n    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);\n  });\n}\n\n\nconst input = $('When Called').first().json;\nconst row = $input.first().json;\nconst prompt = row.prompt;\nconst settings = row.settings || {};\n\nif (!prompt) {\n  throw new Error(`No active prompt registered for key '${input.prompt_key}'. ` +\n                  `Run scripts/load_prompts.py against this database.`);\n}\n\nconst caps = settings['product.capabilities'] || [];\nconst bookingUrl = settings['demo.booking_url'] || '';\n\n// Globals every prompt may reference, merged under caller-supplied variables so\n// a caller can override for a specific market or language.\nconst vars = Object.assign({\n  brand:                 settings['company.brand'] || 'Zenvexa',\n  product:               settings['company.product'] || 'Clinibot',\n  sender_person:         settings['company.sender_person'] || 'Umer',\n  capabilities:          Array.isArray(caps) ? caps.map(c => `- ${c}`).join('\\n') : String(caps),\n  booking_url_or_none:   bookingUrl || 'none \u2014 do not invent availability',\n  language:              'English',\n}, input.variables || {});\n\nconst model = input.model || settings['ai.model'] || 'gemini-2.5-flash';\n\nconst request = {\n  systemInstruction: { parts: [{ text: render(prompt.system_prompt, vars) }] },\n  contents: [{ role: 'user', parts: [{ text: render(prompt.user_template, vars) }] }],\n  generationConfig: {\n    temperature: Number(prompt.temperature ?? 0.2),\n    responseMimeType: 'application/json',\n    responseSchema: sanitizeSchema(prompt.response_schema),\n  },\n};\n\nreturn [{\n  json: {\n    model,\n    request,\n    attempt: 1,\n    prompt_key: input.prompt_key,\n    prompt_version: prompt.version,\n    purpose: input.purpose || prompt.purpose,\n    lead_id: input.lead_id || null,\n    required_fields: prompt.response_schema?.required || [],\n    pricing: settings['ai.pricing'] || {},\n    started_at: Date.now(),\n  },\n}];"
+      },
+      "id": "wf01-02",
+      "name": "Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.model }}:generateContent",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}"
+      },
+      "id": "wf01-03",
+      "name": "Gemini",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_GEMINI",
+          "name": "gemini-api-key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Auth comes from the httpHeaderAuth credential (x-goog-api-key), so no key appears in this file, in the request body, or in any log line.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the model's reply against the prompt's own required-field list.\n// Anything that fails here must not reach an email; the caller gets ok:false.\nconst ctx = $('Build Request').first().json;\nconst resp = $input.first().json;\nconst status = resp.statusCode ?? 200;\nconst body = resp.body ?? resp;\n\nfunction fail(reason, detail) {\n  return [{ json: { ...ctx, ok: false, valid: false, error: reason,\n                    detail: String(detail || '').slice(0, 1500) } }];\n}\n\nif (status < 200 || status >= 300) {\n  return fail(`gemini_http_${status}`, JSON.stringify(body?.error || body));\n}\n\nconst cand = body?.candidates?.[0];\nif (!cand) return fail('no_candidate', JSON.stringify(body).slice(0, 800));\n\n// A truncated response is invalid even if it happens to parse.\nif (cand.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason)) {\n  return fail(`finish_reason_${cand.finishReason}`, JSON.stringify(cand.safetyRatings || {}));\n}\nif (cand.finishReason === 'MAX_TOKENS') return fail('truncated_output', '');\n\nconst text = cand?.content?.parts?.map(p => p.text).join('') || '';\nlet data;\ntry {\n  data = JSON.parse(text);\n} catch (e) {\n  return fail('invalid_json', text.slice(0, 800));\n}\n\nconst missing = (ctx.required_fields || []).filter(\n  f => data[f] === undefined || data[f] === null);\nif (missing.length) return fail('missing_required_fields', missing.join(', '));\n\nconst usage = body.usageMetadata || {};\nconst inTok = usage.promptTokenCount || 0;\nconst outTok = usage.candidatesTokenCount || 0;\nconst rate = (ctx.pricing || {})[ctx.model] || {};\nconst cost = (inTok / 1e6) * Number(rate.input_per_1m || 0)\n           + (outTok / 1e6) * Number(rate.output_per_1m || 0);\n\nreturn [{\n  json: {\n    ...ctx, ok: true, valid: true, data,\n    input_tokens: inTok, output_tokens: outTok,\n    cost_usd: Number(cost.toFixed(6)),\n    latency_ms: Date.now() - Number(ctx.started_at || Date.now()),\n  },\n}];"
+      },
+      "id": "wf01-04",
+      "name": "Parse & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Valid?-c",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf01-05",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One retry, and only one. The retry does not re-ask the same way: it shows the\n// model exactly what it got wrong, which fixes far more failures than a repeat.\nconst prev = $input.first().json;\nconst req = JSON.parse(JSON.stringify(prev.request));\n\nreq.generationConfig.temperature = 0;\nreq.contents.push({\n  role: 'model',\n  parts: [{ text: '(previous response was rejected)' }],\n});\nreq.contents.push({\n  role: 'user',\n  parts: [{ text:\n    'Your previous response was rejected: ' + prev.error +\n    (prev.detail ? ('\\n\\nDetail: ' + prev.detail) : '') +\n    '\\n\\nReturn ONLY a JSON object matching the schema exactly. ' +\n    'Every field listed in \"required\" must be present and non-null. ' +\n    'Do not wrap it in markdown fences and do not add commentary.' }],\n});\n\nreturn [{ json: { ...prev, request: req, attempt: 2, started_at: Date.now() } }];"
+      },
+      "id": "wf01-06",
+      "name": "Build Retry Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $json.model }}:generateContent",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}"
+      },
+      "id": "wf01-07",
+      "name": "Gemini Retry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_GEMINI",
+          "name": "gemini-api-key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validates the model's reply against the prompt's own required-field list.\n// Anything that fails here must not reach an email; the caller gets ok:false.\nconst ctx = $('Build Retry Request').first().json;\nconst resp = $input.first().json;\nconst status = resp.statusCode ?? 200;\nconst body = resp.body ?? resp;\n\nfunction fail(reason, detail) {\n  return [{ json: { ...ctx, ok: false, valid: false, error: reason,\n                    detail: String(detail || '').slice(0, 1500) } }];\n}\n\nif (status < 200 || status >= 300) {\n  return fail(`gemini_http_${status}`, JSON.stringify(body?.error || body));\n}\n\nconst cand = body?.candidates?.[0];\nif (!cand) return fail('no_candidate', JSON.stringify(body).slice(0, 800));\n\n// A truncated response is invalid even if it happens to parse.\nif (cand.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason)) {\n  return fail(`finish_reason_${cand.finishReason}`, JSON.stringify(cand.safetyRatings || {}));\n}\nif (cand.finishReason === 'MAX_TOKENS') return fail('truncated_output', '');\n\nconst text = cand?.content?.parts?.map(p => p.text).join('') || '';\nlet data;\ntry {\n  data = JSON.parse(text);\n} catch (e) {\n  return fail('invalid_json', text.slice(0, 800));\n}\n\nconst missing = (ctx.required_fields || []).filter(\n  f => data[f] === undefined || data[f] === null);\nif (missing.length) return fail('missing_required_fields', missing.join(', '));\n\nconst usage = body.usageMetadata || {};\nconst inTok = usage.promptTokenCount || 0;\nconst outTok = usage.candidatesTokenCount || 0;\nconst rate = (ctx.pricing || {})[ctx.model] || {};\nconst cost = (inTok / 1e6) * Number(rate.input_per_1m || 0)\n           + (outTok / 1e6) * Number(rate.output_per_1m || 0);\n\nreturn [{\n  json: {\n    ...ctx, ok: true, valid: true, data,\n    input_tokens: inTok, output_tokens: outTok,\n    cost_usd: Number(cost.toFixed(6)),\n    latency_ms: Date.now() - Number(ctx.started_at || Date.now()),\n  },\n}];"
+      },
+      "id": "wf01-08",
+      "name": "Parse & Validate (Retry)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Valid After Retry?-c",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf01-09",
+      "name": "Valid After Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.ai_calls (purpose, model, lead_id, prompt_version, input_tokens,\n                          output_tokens, cost_usd, latency_ms, ok, execution_id)\nVALUES ($1, $2, NULLIF($3,'')::uuid, $4, $5::int, $6::int, $7::numeric, $8::int, true, $9)",
+        "options": {
+          "queryReplacement": "={{ [ $json.purpose, $json.model, ($json.lead_id || ''), $json.prompt_version, $json.input_tokens, $json.output_tokens, $json.cost_usd, $json.latency_ms, $execution.id ] }}"
+        }
+      },
+      "id": "wf01-10",
+      "name": "Log AI Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Cost accounting must never block a successful result.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.ai_calls (purpose, model, lead_id, prompt_version, ok, error, execution_id)\nVALUES ($1, $2, NULLIF($3,'')::uuid, $4, false, $5, $6)",
+        "options": {
+          "queryReplacement": "={{ [ $json.purpose, $json.model, ($json.lead_id || ''), $json.prompt_version, ($json.error + ': ' + ($json.detail || '')), $execution.id ] }}"
+        }
+      },
+      "id": "wf01-11",
+      "name": "Log Failed AI Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2680,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, lead_id, error, payload)\nVALUES ($1, $2, $3, NULLIF($4,'')::uuid, $5, $6::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ '01_ai_call', $execution.id, 'Gemini Retry', ($json.lead_id || ''), ($json.error || $json.message || 'unknown error'), JSON.stringify($json) ] }}"
+        }
+      },
+      "id": "wf01-12",
+      "name": "Record AI Dead Letter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 2000,
+      "notes": "Nothing is dropped: unrecoverable items land here for review.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  ok: true,\n  data: j.data,\n  prompt_key: j.prompt_key,\n  prompt_version: j.prompt_version,\n  model: j.model,\n  lead_id: j.lead_id,\n  attempt: j.attempt,\n  input_tokens: j.input_tokens,\n  output_tokens: j.output_tokens,\n  cost_usd: j.cost_usd,\n} }];"
+      },
+      "id": "wf01-13",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Deliberately returns ok:false rather than throwing. The caller decides what a\n// failed AI call means \u2014 for research it means skip the lead, for personalization\n// it means do not send an email. Neither should look like a workflow crash.\nconst j = $input.first().json;\nreturn [{ json: {\n  ok: false,\n  error: j.error,\n  detail: j.detail,\n  prompt_key: j.prompt_key,\n  lead_id: j.lead_id,\n  attempts: 2,\n} }];"
+      },
+      "id": "wf01-14",
+      "name": "Return Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Load Prompt + Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Prompt + Settings": {
+      "main": [
+        [
+          {
+            "node": "Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Request": {
+      "main": [
+        [
+          {
+            "node": "Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Log AI Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Retry Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log AI Call": {
+      "main": [
+        [
+          {
+            "node": "Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Retry Request": {
+      "main": [
+        [
+          {
+            "node": "Gemini Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Retry": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate (Retry)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate (Retry)": {
+      "main": [
+        [
+          {
+            "node": "Valid After Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid After Retry?": {
+      "main": [
+        [
+          {
+            "node": "Log AI Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failed AI Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failed AI Call": {
+      "main": [
+        [
+          {
+            "node": "Record AI Dead Letter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record AI Dead Letter": {
+      "main": [
+        [
+          {
+            "node": "Return Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf01"
+  }
+}

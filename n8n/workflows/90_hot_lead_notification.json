@@ -1,0 +1,514 @@
+{
+  "name": "ACQ 90 \u2014 Hot Lead Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "wf90-00",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.lead_profile($1::uuid) AS profile,\n       (SELECT body_text FROM acq.replies WHERE id = NULLIF($2,'')::uuid) AS reply_body,\n       (SELECT to_jsonb(rc) FROM acq.reply_classifications rc\n         WHERE rc.reply_id = NULLIF($2,'')::uuid) AS classification,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'notify.telegram_chat_id') AS chat_id,\n       (SELECT  value #>> '{}'  FROM acq.settings WHERE key = 'demo.booking_url')        AS booking_url,\n       (SELECT (value)::boolean FROM acq.settings WHERE key = 'outreach.auto_reply_enabled') AS auto_reply,\n       (SELECT from_email::text FROM acq.replies WHERE id = NULLIF($2,'')::uuid) AS reply_to_address,\n       (SELECT subject FROM acq.replies WHERE id = NULLIF($2,'')::uuid) AS reply_subject,\n       m.from_email, m.from_name\nFROM acq.mailboxes m WHERE m.key = 'primary'",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ($json.reply_id || '') ] }}"
+        }
+      },
+      "id": "wf90-01",
+      "name": "Load Lead Profile",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  prompt_key: 'hot_lead_brief',\n  purpose: 'HOT_LEAD',\n  lead_id: j.profile?.lead_id,\n  variables: {\n    lead_profile: j.profile,\n    reply_body: (j.reply_body || '').slice(0, 4000),\n    classification: j.classification || {},\n  },\n}}];"
+      },
+      "id": "wf90-02",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf90-03",
+      "name": "AI: Brief Me",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        920,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Load Lead Profile').first().json;\nconst res = $input.first().json;\nconst p = ctx.profile || {};\n\n// If the briefing model failed, still send a notification. A hot lead going\n// unannounced because a summariser timed out is the worst possible failure here.\nconst d = res.ok ? res.data : {\n  priority: 'HIGH',\n  headline: `Reply from ${p.clinic_name || 'a prospect'}`,\n  key_quote: (ctx.reply_body || '').slice(0, 300),\n  why_qualified: [], recommended_action: 'REVIEW_AND_DECIDE',\n  action_rationale: 'AI briefing unavailable \u2014 read the reply directly.',\n  open_questions: [], draft_reply: '', draft_reply_safe_to_send: false,\n};\n\nconst icon = { URGENT: '\ud83d\udd25', HIGH: '\ud83d\udd25', NORMAL: '\ud83d\udcec', LOW: '\ud83d\udcee' }[d.priority] || '\ud83d\udcec';\nconst bullets = (d.why_qualified || []).map(x => `\u2022 ${x}`).join('\\n') || '\u2022 (no verified facts recorded)';\nconst questions = (d.open_questions || []).map(x => `\u2022 ${x}`).join('\\n');\n\nconst text = [\n  `${icon} *${d.priority} \u2014 ${d.headline}*`,\n  '',\n  `*Clinic:* ${p.clinic_name || '?'}`,\n  `*Location:* ${p.location || '?'}`,\n  `*Lead score:* ${p.lead_score ?? '?'}/100`,\n  `*Contact:* ${p.public_email || p.whatsapp || p.phone || '?'}`,\n  `*Emails sent:* ${p.emails_sent ?? 0}`,\n  '',\n  '*Why it qualified:*',\n  bullets,\n  '',\n  '*They said:*',\n  `_${String(d.key_quote || '').slice(0, 500)}_`,\n  '',\n  `*Action:* ${d.recommended_action}`,\n  d.action_rationale ? `_${d.action_rationale}_` : '',\n  questions ? `\\n*Needs your answer:*\\n${questions}` : '',\n  d.draft_reply ? `\\n*Draft reply:*\\n\\`\\`\\`\\n${d.draft_reply}\\n\\`\\`\\`` : '',\n  ctx.booking_url ? `\\n*Booking link:* ${ctx.booking_url}` : '',\n].filter(Boolean).join('\\n');\n\n// Auto-reply only when explicitly enabled AND the briefing judged the draft safe\n// AND there is a draft AND nothing was escalated. All four, or a human replies.\nconst canAutoReply = !!ctx.auto_reply\n  && d.draft_reply_safe_to_send === true\n  && !!d.draft_reply\n  && (d.open_questions || []).length === 0;\n\nreturn [{ json: {\n  chat_id: ctx.chat_id, text,\n  lead_id: p.lead_id, priority: d.priority,\n  dedupe_key: `hotlead:${p.lead_id}:${$('When Called').first().json.reply_id || 'none'}`,\n  can_auto_reply: canAutoReply,\n  draft_reply: d.draft_reply || '',\n  reply_to_address: ctx.reply_to_address,\n  reply_subject: ctx.reply_subject ? `Re: ${String(ctx.reply_subject).replace(/^re:\\s*/i, '')}` : 'Re: your reply',\n  from_email: ctx.from_email, from_name: ctx.from_name,\n  booking_url: ctx.booking_url || '',\n}}];"
+      },
+      "id": "wf90-04",
+      "name": "Format Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.notifications (channel, target, body, lead_id, dedupe_key, status)\nVALUES ('TELEGRAM', $1, $2, $3::uuid, $4, 'PENDING')\nON CONFLICT (dedupe_key) DO NOTHING\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ ($json.chat_id || 'unset'), $json.text, $json.lead_id, $json.dedupe_key ] }}"
+        }
+      },
+      "id": "wf90-05",
+      "name": "Record Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "The unique dedupe_key means a retried execution cannot notify twice for the same reply.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "First Time For This Reply?-c",
+              "leftValue": "={{ $json.id !== undefined && $json.id !== null }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf90-06",
+      "name": "First Time For This Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Format Notification').first().json.chat_id }}",
+        "text": "={{ $('Format Notification').first().json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "wf90-07",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_TELEGRAM",
+          "name": "acq-telegram"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE acq.notifications SET status = 'SENT', sent_at = now()\n WHERE dedupe_key = $1",
+        "options": {
+          "queryReplacement": "={{ [ $('Format Notification').first().json.dedupe_key ] }}"
+        }
+      },
+      "id": "wf90-08",
+      "name": "Mark Notified",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2020,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One statement, not two: a parameterised query cannot carry multiple\n-- statements, and the data-modifying CTE still runs even though nothing\n-- selects from it.\nWITH marked AS (\n  UPDATE acq.notifications SET status = 'FAILED', error = $2\n   WHERE dedupe_key = $1\n  RETURNING 1\n)\nINSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, lead_id, error, payload)\nSELECT '90_hot_lead_notification', $3, 'Send Telegram',\n       NULLIF($4,'')::uuid, 'telegram delivery failed', $5::jsonb",
+        "options": {
+          "queryReplacement": "={{ [ $('Format Notification').first().json.dedupe_key, ($json.error?.message || 'unknown'), $execution.id, ($('Format Notification').first().json.lead_id || ''), JSON.stringify({ text: $('Format Notification').first().json.text }) ] }}"
+        }
+      },
+      "id": "wf90-09",
+      "name": "Notification Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2240,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "A hot lead that could not be announced is a dead letter, not a shrug.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Auto-Reply Allowed?-c",
+              "leftValue": "={{ $('Format Notification').first().json.can_auto_reply }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf90-10",
+      "name": "Auto-Reply Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $('Format Notification').first().json.from_name + ' <' + $('Format Notification').first().json.from_email + '>' }}",
+        "toEmail": "={{ $('Format Notification').first().json.reply_to_address }}",
+        "subject": "={{ $('Format Notification').first().json.reply_subject }}",
+        "emailFormat": "text",
+        "text": "={{ $('Format Notification').first().json.draft_reply + ($('Format Notification').first().json.booking_url ? '\\n\\nYou can pick a time here: ' + $('Format Notification').first().json.booking_url : '') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "wf90-11",
+      "name": "Send Auto-Reply",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2680,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_SMTP",
+          "name": "zenvexa-smtp"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Replying to someone who wrote to us is not cold outreach, so this deliberately bypasses the send caps in workflow 50. It is still gated on outreach.auto_reply_enabled, which ships off.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.sales_activities (lead_id, activity_type, actor, summary, payload, execution_id)\nVALUES ($1::uuid, 'AUTO_REPLY_SENT', 'AI', 'Automatic reply sent to interested prospect',\n        $2::jsonb, $3)",
+        "options": {
+          "queryReplacement": "={{ [ $('Format Notification').first().json.lead_id, JSON.stringify({ to: $('Format Notification').first().json.reply_to_address, body: $('Format Notification').first().json.draft_reply }), $execution.id ] }}"
+        }
+      },
+      "id": "wf90-12",
+      "name": "Log Auto-Reply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "wf90-13",
+      "name": "Already Notified",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf90-14",
+      "name": "Human Will Reply",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3340,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Load Lead Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Lead Profile": {
+      "main": [
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Brief Me",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Brief Me": {
+      "main": [
+        [
+          {
+            "node": "Format Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Notification": {
+      "main": [
+        [
+          {
+            "node": "Record Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Notification": {
+      "main": [
+        [
+          {
+            "node": "First Time For This Reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First Time For This Reply?": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Already Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram": {
+      "main": [
+        [
+          {
+            "node": "Mark Notified",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notification Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Notified": {
+      "main": [
+        [
+          {
+            "node": "Auto-Reply Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-Reply Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Send Auto-Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Human Will Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Auto-Reply": {
+      "main": [
+        [
+          {
+            "node": "Log Auto-Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf90"
+  }
+}

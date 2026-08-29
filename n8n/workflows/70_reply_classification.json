@@ -1,0 +1,675 @@
+{
+  "name": "ACQ 70 \u2014 Reply Classification",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "wf70-00",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT r.id AS reply_id, r.body_text, r.subject AS reply_subject, r.from_email,\n       r.lead_id,\n       e.subject AS sent_subject, e.body_text AS sent_body,\n       acq.lead_profile(r.lead_id) AS lead_profile,\n       (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.min_classification_confidence') AS min_conf\nFROM acq.replies r\nLEFT JOIN acq.emails e ON e.id = r.email_id\nWHERE r.id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [ $json.reply_id ] }}"
+        }
+      },
+      "id": "wf70-01",
+      "name": "Load Reply Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  prompt_key: 'classify_reply',\n  purpose: 'CLASSIFY',\n  lead_id: j.lead_id,\n  variables: {\n    sent_subject: j.sent_subject || '(unknown)',\n    sent_body: (j.sent_body || '').slice(0, 3000),\n    reply_subject: j.reply_subject || '',\n    reply_body: (j.body_text || '').slice(0, 6000),\n    from_email: j.from_email,\n    lead_context: j.lead_profile,\n  },\n}}];"
+      },
+      "id": "wf70-02",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf70-03",
+      "name": "AI: Classify",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        920,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Load Reply Context').first().json;\nconst res = $input.first().json;\nconst minConf = Number(ctx.min_conf ?? 0.75);\n\n// A failed classification is never treated as \"probably fine\". It becomes a\n// human review item, and follow-ups are already stopped by workflow 60.\nif (!res.ok) {\n  return [{ json: {\n    reply_id: ctx.reply_id, lead_id: ctx.lead_id, route: 'HUMAN',\n    class: 'UNCLEAR', confidence: 0, requires_human: true,\n    escalation_reason: `classification_failed:${res.error}`,\n    reasoning: 'AI classification failed', extracted_questions: [],\n    suggested_reply: '', model: null, prompt_version: null,\n  }}];\n}\n\nconst d = res.data;\nlet cls = d.class;\n\n// Belt and braces over the prompt's own instruction: if the model spotted any\n// removal request at all, the class is OPT_OUT regardless of what it chose.\nif (d.opt_out_signal_detected === true) cls = 'OPT_OUT';\n\nconst lowConf = Number(d.confidence ?? 0) < minConf;\nconst requiresHuman = !!d.requires_human || lowConf;\n\nlet route;\nswitch (cls) {\n  case 'OPT_OUT':          route = 'OPT_OUT'; break;\n  case 'NOT_INTERESTED':   route = 'NEGATIVE'; break;\n  case 'LATER':            route = 'LATER'; break;\n  case 'AUTOMATIC_REPLY':  route = 'AUTO'; break;\n  case 'VERY_INTERESTED':\n  case 'INTERESTED':\n  case 'ASKING_DEMO':\n  case 'ASKING_PRICE':     route = 'HOT'; break;\n  default:                 route = 'HUMAN';\n}\n// An interested prospect asking something a human must answer still counts as\n// hot \u2014 the notification carries the open question rather than burying it.\nif (requiresHuman && route !== 'HOT' && route !== 'OPT_OUT') route = 'HUMAN';\n\nconst nextStatus = {\n  OPT_OUT: 'OPTED_OUT', NEGATIVE: 'NOT_INTERESTED', LATER: 'LATER',\n  HOT: (cls === 'ASKING_DEMO' ? 'DEMO_REQUESTED' : 'INTERESTED'),\n  HUMAN: 'REPLIED', AUTO: 'REPLIED',\n}[route];\n\nreturn [{ json: {\n  reply_id: ctx.reply_id, lead_id: ctx.lead_id,\n  route, next_status: nextStatus,\n  class: cls, confidence: d.confidence ?? 0,\n  reasoning: d.reasoning || '', extracted_questions: d.extracted_questions || [],\n  suggested_reply: d.suggested_reply || '',\n  requires_human: requiresHuman,\n  escalation_reason: d.escalation_reason || (lowConf ? `low_confidence:${d.confidence}` : null),\n  opt_out_quote: d.opt_out_quote || '',\n  sentiment: d.sentiment || 'NEUTRAL',\n  revisit_after_days: d.revisit_after_days || 0,\n  model: res.model, prompt_version: res.prompt_version,\n}}];"
+      },
+      "id": "wf70-04",
+      "name": "Interpret Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.reply_classifications (\n  reply_id, class, confidence, reasoning, extracted_questions, suggested_reply,\n  requires_human, escalation_reason, model, prompt_version)\nVALUES ($1::uuid, $2::acq.reply_class, $3::numeric, $4, $5::jsonb, $6,\n        $7::boolean, $8, $9, $10)\nON CONFLICT (reply_id) DO UPDATE\n  SET class = EXCLUDED.class, confidence = EXCLUDED.confidence,\n      reasoning = EXCLUDED.reasoning, requires_human = EXCLUDED.requires_human\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.reply_id, $json.class, $json.confidence, $json.reasoning, JSON.stringify($json.extracted_questions), $json.suggested_reply, $json.requires_human, ($json.escalation_reason || ''), $json.model, $json.prompt_version ] }}"
+        }
+      },
+      "id": "wf70-05",
+      "name": "Save Classification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Outcome-0",
+                    "leftValue": "={{ $('Interpret Classification').first().json.route }}",
+                    "rightValue": "OPT_OUT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "OPT_OUT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Outcome-1",
+                    "leftValue": "={{ $('Interpret Classification').first().json.route }}",
+                    "rightValue": "HOT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HOT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Outcome-2",
+                    "leftValue": "={{ $('Interpret Classification').first().json.route }}",
+                    "rightValue": "LATER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "LATER"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Outcome-3",
+                    "leftValue": "={{ $('Interpret Classification').first().json.route }}",
+                    "rightValue": "NEGATIVE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEGATIVE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Outcome-4",
+                    "leftValue": "={{ $('Interpret Classification').first().json.route }}",
+                    "rightValue": "HUMAN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HUMAN"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "wf70-06",
+      "name": "Route Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.apply_opt_out('EMAIL',\n         (SELECT from_email::text FROM acq.replies WHERE id = $1::uuid),\n         'OPT_OUT_REQUEST', 'REPLY', $2::uuid, $3::jsonb) AS suppressed",
+        "options": {
+          "queryReplacement": "={{ [ $json.reply_id, $json.lead_id, JSON.stringify({ quote: $json.opt_out_quote, class: $json.class }) ] }}"
+        }
+      },
+      "id": "wf70-07",
+      "name": "Apply Opt-Out",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1800,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "apply_opt_out also moves the lead to OPTED_OUT and cancels everything queued. There is no path back into the pipeline afterwards.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 90 \u2014 Hot Lead Notification",
+          "mode": "list",
+          "cachedResultName": "ACQ 90 \u2014 Hot Lead Notification"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf70-08",
+      "name": "Notify Hot Lead",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2020,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 90 \u2014 Hot Lead Notification' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH moved AS (\n  SELECT acq.transition_lead($1::uuid, 'LATER', $2, 'AI', $3) AS r\n)\nUPDATE acq.leads\n   SET next_follow_up_at = now() + make_interval(days => GREATEST($4::int, 30))\n WHERE id = $1::uuid",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ('later:' + $json.class), $execution.id, ($json.revisit_after_days || 90) ] }}"
+        }
+      },
+      "id": "wf70-09",
+      "name": "Snooze Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2240,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "One bounded revisit, at least 30 days out. Not a fourth follow-up.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.transition_lead($1::uuid, 'NOT_INTERESTED', $2, 'AI', $3) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ('declined:' + $json.class), $execution.id ] }}"
+        }
+      },
+      "id": "wf70-10",
+      "name": "Close Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.approvals (kind, lead_id, reply_id, title, payload, ai_confidence)\nVALUES (\n  CASE\n    WHEN $5 = 'ASKING_PRICE'   THEN 'PRICING_QUESTION'::acq.approval_kind\n    WHEN $5 = 'WRONG_PERSON'   THEN 'DATA_CONFLICT'::acq.approval_kind\n    WHEN $5 = 'NEEDS_MORE_INFO' THEN 'REPLY_DRAFT'::acq.approval_kind\n    ELSE 'LOW_CONFIDENCE_CLASSIFICATION'::acq.approval_kind\n  END,\n  $1::uuid, $2::uuid, $3, $4::jsonb, $6::numeric)\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, $json.reply_id, ('Reply needs a human: ' + $json.class), JSON.stringify({ class: $json.class, reason: $json.escalation_reason, questions: $json.extracted_questions, draft: $json.suggested_reply }), $json.class, $json.confidence ] }}"
+        }
+      },
+      "id": "wf70-11",
+      "name": "Escalate To Human",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2680,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 90 \u2014 Hot Lead Notification",
+          "mode": "list",
+          "cachedResultName": "ACQ 90 \u2014 Hot Lead Notification"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf70-12",
+      "name": "Notify (Needs Human)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2900,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 90 \u2014 Hot Lead Notification' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf70-13",
+      "name": "Auto-Reply \u2014 No Action",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $('Interpret Classification').first().json;\nreturn [{ json: { lead_id: j.lead_id, reply_id: j.reply_id, class: j.class,\n                  route: j.route, requires_human: j.requires_human } }];"
+      },
+      "id": "wf70-14",
+      "name": "Prepare Notification Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $('Interpret Classification').first().json;\nreturn [{ json: { lead_id: j.lead_id, reply_id: j.reply_id, class: j.class,\n                  route: 'HUMAN', requires_human: true } }];"
+      },
+      "id": "wf70-15",
+      "name": "Prepare Notification Input (Human)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 90 \u2014 Hot Lead Notification",
+          "mode": "list",
+          "cachedResultName": "ACQ 90 \u2014 Hot Lead Notification"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf70-16",
+      "name": "Notify Opt-Out",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3780,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 90 \u2014 Hot Lead Notification' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $('Interpret Classification').first().json;\nreturn [{ json: { lead_id: j.lead_id, reply_id: j.reply_id, class: 'OPT_OUT',\n                  route: 'OPT_OUT', requires_human: false } }];"
+      },
+      "id": "wf70-17",
+      "name": "Prepare Opt-Out Notice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Load Reply Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Reply Context": {
+      "main": [
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Classify": {
+      "main": [
+        [
+          {
+            "node": "Interpret Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpret Classification": {
+      "main": [
+        [
+          {
+            "node": "Save Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Classification": {
+      "main": [
+        [
+          {
+            "node": "Route Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Outcome": {
+      "main": [
+        [
+          {
+            "node": "Apply Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Notification Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Snooze Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Close Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalate To Human",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auto-Reply \u2014 No Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Opt-Out": {
+      "main": [
+        [
+          {
+            "node": "Prepare Opt-Out Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Opt-Out Notice": {
+      "main": [
+        [
+          {
+            "node": "Notify Opt-Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Notification Input": {
+      "main": [
+        [
+          {
+            "node": "Notify Hot Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalate To Human": {
+      "main": [
+        [
+          {
+            "node": "Prepare Notification Input (Human)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Notification Input (Human)": {
+      "main": [
+        [
+          {
+            "node": "Notify (Needs Human)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf70"
+  }
+}

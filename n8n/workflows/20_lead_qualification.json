@@ -1,0 +1,245 @@
+{
+  "name": "ACQ 20 \u2014 Lead Qualification",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "wf20-00",
+      "name": "Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,\n       category, priority_tier, source, domain\nFROM acq.claim_leads(ARRAY['NEW']::acq.lead_status[], 50, $1)",
+        "options": {
+          "queryReplacement": "={{ [ 'wf20:' + $execution.id ] }}"
+        }
+      },
+      "id": "wf20-01",
+      "name": "Claim New Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "FOR UPDATE SKIP LOCKED inside claim_leads means overlapping runs take disjoint work instead of colliding.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Rejections that need no model call and no network request. Anything decided\n// here costs nothing, which is the whole point of running it before workflow 30.\nconst out = [];\nfor (const item of $input.all()) {\n  const l = item.json;\n  const reasons = [];\n\n  const hasEmail = !!l.public_email;\n  const hasPhone = !!l.phone;\n  const hasWhatsapp = !!l.whatsapp;\n  const hasWebsite = !!l.website;\n\n  if (!hasEmail && !hasPhone && !hasWhatsapp) reasons.push('no_contact_channel');\n  if (!hasWebsite && !hasEmail) reasons.push('nothing_to_research');\n  if (/\\b(hospital|trust|foundation|government|govt|welfare|charitable|medical college)\\b/i\n        .test(l.clinic_name || '')) reasons.push('large_institution');\n  if ((l.clinic_name || '').trim().length < 3) reasons.push('unusable_name');\n  if (/\\b(pharmacy|medical store|chemist|drug store)\\b/i.test(l.clinic_name || ''))\n    reasons.push('not_appointment_based');\n\n  out.push({ json: {\n    ...l,\n    disqualified: reasons.length > 0,\n    disqualify_reasons: reasons,\n    // Only leads with a research surface are worth an AI call.\n    researchable: hasWebsite,\n  }});\n}\nreturn out;"
+      },
+      "id": "wf20-02",
+      "name": "Deterministic Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.compute_score($1::uuid, 'DETERMINISTIC') AS score",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "wf20-03",
+      "name": "Score (Deterministic)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        920,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Pairs each scoring result back with its triage item. The Postgres node emits\n// one output row per input item in the same order, so index alignment holds.\nconst triaged = $('Deterministic Triage').all();\nconst out = [];\n\n$input.all().forEach((item, i) => {\n  const lead = triaged[i].json;\n  const s = item.json.score || {};\n  const score = s.score ?? 0;\n  const qualifies = s.qualifies === true;\n\n  let status, reason;\n  if (lead.disqualified) {\n    status = lead.disqualify_reasons.includes('no_contact_channel') ? 'INVALID' : 'REJECTED';\n    reason = lead.disqualify_reasons.join(',');\n  } else if (!qualifies) {\n    status = 'REJECTED';\n    reason = `score_below_threshold:${score}`;\n  } else if (!lead.researchable) {\n    // Qualifies on paper but there is nothing public to write a personal email\n    // from. A human can decide; the system will not send something generic.\n    status = 'READY_FOR_REVIEW';\n    reason = 'qualified_but_no_website_to_research';\n  } else {\n    status = 'QUALIFIED';\n    reason = `score:${score}`;\n  }\n\n  out.push({ json: { lead_id: lead.id, clinic_name: lead.clinic_name,\n                     score, status, reason } });\n});\nreturn out;"
+      },
+      "id": "wf20-04",
+      "name": "Decide Next Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'SYSTEM', $4) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, $json.status, $json.reason, $execution.id ] }}"
+        }
+      },
+      "id": "wf20-05",
+      "name": "Apply Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, finished_at)\nVALUES ('20_lead_qualification', $1, 'SUCCESS', $2::int, now())",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id, $input.all().length ] }}"
+        }
+      },
+      "id": "wf20-06",
+      "name": "Record Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Claim New Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim New Leads": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Triage": {
+      "main": [
+        [
+          {
+            "node": "Score (Deterministic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score (Deterministic)": {
+      "main": [
+        [
+          {
+            "node": "Decide Next Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Next Status": {
+      "main": [
+        [
+          {
+            "node": "Apply Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Status": {
+      "main": [
+        [
+          {
+            "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf20"
+  }
+}

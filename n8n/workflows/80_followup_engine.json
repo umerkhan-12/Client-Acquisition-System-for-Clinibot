@@ -1,0 +1,348 @@
+{
+  "name": "ACQ 80 \u2014 Follow-up Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "wf80-00",
+      "name": "Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT f.follow_up_id, f.lead_id, f.campaign_id, f.step_no, f.clinic_name, f.prompt_key,\n       l.city, l.area, l.category, l.public_email, l.lead_score, l.doctor_count,\n       (to_jsonb(r) - 'raw') AS research,\n       (SELECT jsonb_agg(jsonb_build_object('step_no', e.step_no, 'subject', e.subject,\n                                            'body_text', e.body_text, 'sent_at', e.sent_at)\n                         ORDER BY e.step_no)\n          FROM acq.emails e\n         WHERE e.lead_id = f.lead_id AND e.status = 'SENT') AS previous_emails,\n       EXTRACT(DAY FROM now() - l.last_contacted_at)::int AS days_since_last,\n       (SELECT (value)::boolean          FROM acq.settings WHERE key = 'outreach.auto_send_enabled') AS auto_send,\n       (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.min_email_confidence')    AS min_conf,\n       (SELECT  value                    FROM acq.settings WHERE key = 'guardrails.banned_phrases')  AS banned,\n       c.mailbox_id\nFROM acq.due_follow_ups(20) f\nJOIN acq.leads l     ON l.id = f.lead_id\nJOIN acq.campaigns c ON c.id = f.campaign_id\nLEFT JOIN acq.lead_research r ON r.lead_id = f.lead_id AND r.is_current",
+        "options": {}
+      },
+      "id": "wf80-01",
+      "name": "Due Follow-Ups",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "due_follow_ups() already excludes replied, opted-out, bounced and over-cap leads, so nothing here needs to re-check them.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf80-02",
+      "name": "Per Follow-Up",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  prompt_key: j.prompt_key,          // followup_1_value | _2_different_angle | _3_breakup\n  purpose: 'FOLLOWUP',\n  lead_id: j.lead_id,\n  variables: {\n    step_no: String(j.step_no),\n    days_since_last: String(j.days_since_last ?? 0),\n    lead_json: {\n      clinic_name: j.clinic_name, city: j.city, area: j.area,\n      category: j.category, doctor_count: j.doctor_count, lead_score: j.lead_score,\n    },\n    research_json: j.research || {},\n    previous_emails: j.previous_emails || [],\n  },\n}}];"
+      },
+      "id": "wf80-03",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf80-04",
+      "name": "AI: Write Follow-Up",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1140,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ctx = $('Per Follow-Up').first().json;\nconst res = $input.first().json;\n\nif (!res.ok) {\n  return [{ json: { ok: false, lead_id: ctx.lead_id, follow_up_id: ctx.follow_up_id,\n                    reasons: [`ai_failed:${res.error}`] } }];\n}\n\nconst d = res.data;\nconst subject = String(d.subject || '').trim();\nconst body = String(d.body_text || '').trim();\nconst reasons = [];\n\nconst banned = Array.isArray(ctx.banned) ? ctx.banned : [];\nconst hay = `${subject}\\n${body}`.toLowerCase();\nfor (const p of banned) if (hay.includes(String(p).toLowerCase().trim())) reasons.push(`banned_phrase:${p}`);\n\n// The specific failure modes of follow-up writing.\nif (/\\b(just following up|bumping this|circling back|in case you missed|did you see my)\\b/i.test(body))\n  reasons.push('filler_opener');\nif (/\\b(haven't heard|no response|you didn't reply|I'll assume)\\b/i.test(body))\n  reasons.push('guilt_trip');\nif (/\\b(last chance|final notice|expires|act now|limited)\\b/i.test(body))\n  reasons.push('false_urgency');\nif (!body.includes('{{UNSUBSCRIBE}}')) reasons.push('missing_unsubscribe_token');\nif (body.length > 900) reasons.push(`too_long_for_followup:${body.length}`);\nif (body.length < 120) reasons.push(`too_short:${body.length}`);\nif (/\\b(?:PKR|Rs\\.?|USD|\\$)\\s?\\d/i.test(body)) reasons.push('contains_price');\n\n// A follow-up that repeats the previous email is worse than no follow-up.\nconst prev = (ctx.previous_emails || []).map(e => String(e.body_text || ''));\nconst firstSentence = body.split(/[.!?]/)[0].trim().toLowerCase();\nif (firstSentence.length > 20 && prev.some(p => p.toLowerCase().includes(firstSentence)))\n  reasons.push('repeats_previous_email');\n\nconst conf = Number(d.confidence ?? 0);\nconst needsReview = !ctx.auto_send || conf < Number(ctx.min_conf ?? 0.7);\n\nreturn [{ json: {\n  ok: reasons.length === 0,\n  reasons,\n  lead_id: ctx.lead_id,\n  follow_up_id: ctx.follow_up_id,\n  campaign_id: ctx.campaign_id,\n  mailbox_id: ctx.mailbox_id,\n  step_no: ctx.step_no,\n  to_email: ctx.public_email,\n  clinic_name: ctx.clinic_name,\n  subject, body_text: body,\n  suggested_feature: d.suggested_feature || '',\n  confidence: conf,\n  model: res.model, prompt_version: res.prompt_version,\n  status: needsReview ? 'PENDING_APPROVAL' : 'READY_TO_SEND',\n}}];"
+      },
+      "id": "wf80-05",
+      "name": "Guardrails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Follow-Up Usable?-c",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf80-06",
+      "name": "Follow-Up Usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.emails (lead_id, campaign_id, mailbox_id, step_no, to_email,\n                        subject, body_text, suggested_feature, ai_confidence,\n                        model, prompt_version, status)\nVALUES ($1::uuid, $2::uuid, $3::uuid, $4::int, $5::citext, $6, $7, $8,\n        $9::numeric, $10, $11, $12::acq.email_status)\nON CONFLICT (lead_id, campaign_id, step_no) DO NOTHING\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, $json.campaign_id, $json.mailbox_id, $json.step_no, $json.to_email, $json.subject, $json.body_text, $json.suggested_feature, $json.confidence, $json.model, $json.prompt_version, $json.status ] }}"
+        }
+      },
+      "id": "wf80-07",
+      "name": "Queue Follow-Up Email",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1800,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH s AS (\n  UPDATE acq.follow_ups SET status = 'SKIPPED', cancelled_reason = $2\n   WHERE id = $1::uuid AND status = 'SCHEDULED'\n)\nINSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, lead_id, error, payload)\nVALUES ('80_followup_engine', $3, 'Guardrails', $4::uuid, $2, $5::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $json.follow_up_id, ('guardrails: ' + ($json.reasons || []).join(', ')), $execution.id, $json.lead_id, JSON.stringify({ reasons: $json.reasons, subject: $json.subject, body_text: $json.body_text }) ] }}"
+        }
+      },
+      "id": "wf80-08",
+      "name": "Skip This Follow-Up",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2020,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "A bad follow-up is skipped, not retried into the prospect's inbox. The lead keeps its status and the sequence simply ends one step early.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf80-09",
+      "name": "Follow-Up Sweep Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Hourly": {
+      "main": [
+        [
+          {
+            "node": "Due Follow-Ups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Due Follow-Ups": {
+      "main": [
+        [
+          {
+            "node": "Per Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Follow-Up Sweep Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Write Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Write Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Guardrails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Follow-Up Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Follow-Up Usable?": {
+      "main": [
+        [
+          {
+            "node": "Queue Follow-Up Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip This Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Follow-Up Email": {
+      "main": [
+        [
+          {
+            "node": "Per Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip This Follow-Up": {
+      "main": [
+        [
+          {
+            "node": "Per Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf80"
+  }
+}

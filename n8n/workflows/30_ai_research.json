@@ -1,0 +1,706 @@
+{
+  "name": "ACQ 30 \u2014 AI Research",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6-14 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "wf30-00",
+      "name": "Hourly (Business Hours)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT l.id, l.clinic_name, l.website, l.domain, l.city, l.area, l.category,\n       l.phone, l.whatsapp, l.public_email, l.doctor_count, l.source_url,\n       l.lead_score, l.raw\nFROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[],\n       (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'ai.max_research_per_run'),\n       $1) l\nWHERE l.website IS NOT NULL\n  AND NOT EXISTS (\n    SELECT 1 FROM acq.lead_research r\n     WHERE r.lead_id = l.id AND r.is_current AND r.stale_after > now()\n  )",
+        "options": {
+          "queryReplacement": "={{ [ 'wf30:' + $execution.id ] }}"
+        }
+      },
+      "id": "wf30-01",
+      "name": "Claim Leads Needing Research",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf30-02",
+      "name": "Per Lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const l = $input.first().json;\nlet origin;\ntry {\n  origin = new URL(l.website.startsWith('http') ? l.website : `https://${l.website}`).origin;\n} catch (e) {\n  return [{ json: { ...l, fetch_error: 'unparseable_website_url', pages: [] } }];\n}\nreturn [{ json: { ...l, origin, robots_url: `${origin}/robots.txt` } }];"
+      },
+      "id": "wf30-03",
+      "name": "Plan Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.robots_url }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $('Load Crawl Settings').first().json.user_agent }}"
+            }
+          ]
+        }
+      },
+      "id": "wf30-04",
+      "name": "Fetch robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 2000,
+      "notes": "A missing or unreachable robots.txt is treated as 'allowed', which is the standard interpretation.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT  value #>> '{}'       FROM acq.settings WHERE key = 'discovery.crawl_user_agent') AS user_agent,\n       (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'discovery.max_pages_per_site') AS max_pages",
+        "options": {}
+      },
+      "id": "wf30-05",
+      "name": "Load Crawl Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// A deliberately conservative robots.txt reader: it honours Disallow rules for\n// our own User-agent and for *, and on any doubt it fetches nothing. Being\n// wrong in the permissive direction means crawling somewhere we were asked not\n// to, which is exactly what section 3 of the brief forbids.\nconst lead = $('Plan Fetch').first().json;\nconst cfg = $('Load Crawl Settings').first().json;\nconst resp = $input.first().json;\nconst maxPages = cfg.max_pages || 3;\n\nif (lead.fetch_error) return [{ json: { ...lead, allowed_urls: [], robots_allowed: false } }];\n\nconst status = resp.statusCode ?? 0;\nconst text = (status >= 200 && status < 300) ? String(resp.body ?? '') : '';\n\nconst disallow = [];\nlet applies = false;\nfor (const raw of text.split(/\\r?\\n/)) {\n  const line = raw.split('#')[0].trim();\n  if (!line) continue;\n  const [rawKey, ...rest] = line.split(':');\n  const key = rawKey.trim().toLowerCase();\n  const val = rest.join(':').trim();\n  if (key === 'user-agent') {\n    applies = (val === '*' || /zenvexa/i.test(val));\n  } else if (key === 'disallow' && applies && val) {\n    disallow.push(val);\n  }\n}\n\nconst blocked = (path) => disallow.some(d => d === '/' || path.startsWith(d));\n\n// Only pages that plausibly describe the practice. No search pages, no\n// pagination, no crawling the whole site.\nconst candidates = ['/', '/contact', '/contact-us', '/about', '/services', '/team', '/doctors'];\nconst allowed = [];\nfor (const path of candidates) {\n  if (blocked(path)) continue;\n  allowed.push(`${lead.origin}${path === '/' ? '' : path}`);\n  if (allowed.length >= maxPages) break;\n}\n\nreturn [{ json: {\n  ...lead,\n  allowed_urls: allowed,\n  robots_allowed: allowed.length > 0,\n  robots_disallow_rules: disallow,\n}}];"
+      },
+      "id": "wf30-06",
+      "name": "Apply robots.txt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Any Pages Allowed?-c",
+              "leftValue": "={{ $json.robots_allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf30-07",
+      "name": "Any Pages Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn j.allowed_urls.map(u => ({ json: { url: u, lead_id: j.id } }));"
+      },
+      "id": "wf30-08",
+      "name": "Expand Page URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $('Load Crawl Settings').first().json.user_agent }}"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html"
+            }
+          ]
+        }
+      },
+      "id": "wf30-09",
+      "name": "Fetch Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 2000,
+      "notes": "Continues on error so one dead URL does not abandon the lead.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf30-10",
+      "name": "Nothing Fetchable",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const lead = $('Apply robots.txt').first().json;\n\nfunction toText(html) {\n  return String(html)\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<!--[\\s\\S]*?-->/g, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nconst EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g;\nconst NOT_AN_ADDRESS = /\\.(png|jpe?g|gif|svg|webp|css|js|woff2?)$/i;\n\nconst pages = [];\nconst found = [];   // every candidate address, with the page it was read from\n\nfor (const item of $input.all()) {\n  const r = item.json;\n  const url = r.url || r.request?.uri || '';\n  const status = r.statusCode ?? 0;\n  if (status < 200 || status >= 300) continue;\n  const body = typeof r.body === 'string' ? r.body : '';\n  if (!body) continue;\n\n  const text = toText(body);\n  if (text.length < 40) continue;\n  pages.push({ url, text: text.slice(0, 6000) });\n\n  for (const m of (body.match(EMAIL_RE) || [])) {\n    const addr = m.toLowerCase();\n    if (NOT_AN_ADDRESS.test(addr)) continue;\n    if (/(example|sentry|wixpress|godaddy|wordpress|@2x)/.test(addr)) continue;\n    if (!found.some(f => f.email === addr)) found.push({ email: addr, url });\n  }\n}\n\n// Prefer an address on the clinic's own domain: a generic address found on a\n// clinic site is far more likely to be the web designer's than the clinic's.\nconst site = (lead.domain || '').replace(/^www\\./, '');\nfound.sort((a, b) => {\n  const aOwn = site && a.email.endsWith(`@${site}`) ? 0 : 1;\n  const bOwn = site && b.email.endsWith(`@${site}`) ? 0 : 1;\n  return aOwn - bOwn;\n});\nconst best = found[0] || null;\n\nconst combined = pages\n  .map(p => `--- ${p.url} ---\\n${p.text}`)\n  .join('\\n\\n')\n  .slice(0, 14000);\n\nreturn [{ json: {\n  ...lead,\n  page_content: combined,\n  fetched_urls: pages.map(p => p.url),\n  pages_fetched: pages.length,\n  // Recorded with the exact page it was read from, which is what makes it a\n  // fact rather than a guess. acq.upsert_lead rejects it without that URL.\n  discovered_email: best?.email || null,\n  discovered_email_url: best?.url || null,\n  all_emails_found: found,\n}}];"
+      },
+      "id": "wf30-11",
+      "name": "Extract Text + Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  prompt_key: 'research_clinic',\n  purpose: 'RESEARCH',\n  lead_id: j.id,\n  variables: {\n    lead_json: {\n      clinic_name: j.clinic_name, website: j.website, city: j.city, area: j.area,\n      category: j.category, phone: j.phone, whatsapp: j.whatsapp,\n      public_email: j.public_email || j.discovered_email,\n      doctor_count: j.doctor_count, source_url: j.source_url,\n    },\n    page_content: j.page_content || '(no page content could be retrieved)',\n    fetched_urls: j.fetched_urls || [],\n  },\n}}];"
+      },
+      "id": "wf30-12",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf30-13",
+      "name": "AI: Research Clinic",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        3120,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const src = $('Extract Text + Emails').first().json;\nconst res = $input.first().json;\n\nif (!res.ok) {\n  return [{ json: { lead_id: src.id, ok: false, error: res.error,\n                    next_status: 'READY_FOR_REVIEW',\n                    reason: `research_failed:${res.error}` } }];\n}\n\nconst d = res.data;\nconst disq = Array.isArray(d.disqualifiers) ? d.disqualifiers : [];\n\n// The model's own confidence gates whether its output is trusted at all. Thin\n// pages produce confident-sounding but empty briefs; below 0.4 the lead goes to\n// a human rather than into an email.\nlet next_status = 'QUALIFIED', reason = `researched:${d.confidence}`;\nif (disq.length) {\n  next_status = 'REJECTED';\n  reason = `disqualified:${disq.join(',')}`;\n} else if (Number(d.confidence) < 0.4) {\n  next_status = 'READY_FOR_REVIEW';\n  reason = `low_research_confidence:${d.confidence}`;\n}\n\nreturn [{ json: {\n  lead_id: src.id,\n  ok: true,\n  next_status,\n  reason,\n  prompt_version: res.prompt_version,\n  model: res.model,\n  research: {\n    clinic_type: d.clinic_type,\n    facts: d.facts || [],\n    inferences: d.inferences || [],\n    services: d.services || [],\n    doctor_count_estimate: d.doctor_count_estimate ?? null,\n    has_whatsapp: !!d.has_whatsapp,\n    has_online_booking: !!d.has_online_booking,\n    has_visible_reception: !!d.has_visible_reception,\n    pain_point: d.pain_point || '',\n    recommended_pitch: d.recommended_pitch || '',\n    relevance_reason: d.relevance_reason || '',\n    confidence: d.confidence,\n    raw: {\n      advertises_appointments: !!d.advertises_appointments,\n      high_value_services: !!d.high_value_services,\n      active_social_presence: !!d.active_social_presence,\n      doctor_count_basis: d.doctor_count_basis || '',\n      disqualifiers: disq,\n    },\n  },\n  fetched_urls: src.fetched_urls || [],\n  robots_allowed: src.robots_allowed,\n  discovered_email: src.discovered_email,\n  discovered_email_url: src.discovered_email_url,\n}}];"
+      },
+      "id": "wf30-14",
+      "name": "Handle Research Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Only fills an address the lead does not already have, and only with the page\n-- URL it was read from. The CHECK constraint on acq.leads refuses it otherwise.\nUPDATE acq.leads\n   SET public_email       = $2::citext,\n       email_source       = 'CLINIC_WEBSITE',\n       email_evidence_url = $3\n WHERE id = $1::uuid\n   AND public_email IS NULL\n   AND $2 <> ''\n   AND $3 <> ''",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ($json.discovered_email || ''), ($json.discovered_email_url || '') ] }}"
+        }
+      },
+      "id": "wf30-15",
+      "name": "Record Discovered Email",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3560,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH archived AS (\n  UPDATE acq.lead_research SET is_current = false\n   WHERE lead_id = $1::uuid AND is_current\n)\nINSERT INTO acq.lead_research (\n  lead_id, is_current, clinic_type, facts, inferences, services,\n  doctor_count_estimate, has_whatsapp, has_online_booking, has_visible_reception,\n  pain_point, recommended_pitch, relevance_reason, confidence,\n  model, prompt_version, fetched_urls, robots_allowed, raw, stale_after)\nSELECT $1::uuid, true,\n       r->>'clinic_type', r->'facts', r->'inferences', r->'services',\n       NULLIF(r->>'doctor_count_estimate','')::int,\n       (r->>'has_whatsapp')::boolean, (r->>'has_online_booking')::boolean,\n       (r->>'has_visible_reception')::boolean,\n       r->>'pain_point', r->>'recommended_pitch', r->>'relevance_reason',\n       NULLIF(r->>'confidence','')::numeric,\n       $3, $4, ARRAY(SELECT jsonb_array_elements_text($5::jsonb)),\n       $6::boolean, r->'raw',\n       now() + make_interval(days =>\n         (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'ai.research_ttl_days'))\nFROM (SELECT $2::jsonb AS r) s\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, JSON.stringify($json.research), $json.model, $json.prompt_version, JSON.stringify($json.fetched_urls), $json.robots_allowed ] }}"
+        }
+      },
+      "id": "wf30-16",
+      "name": "Save Research",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3780,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.compute_score($1::uuid, 'BLENDED') AS score",
+        "options": {
+          "queryReplacement": "={{ [ $('Handle Research Result').first().json.lead_id ] }}"
+        }
+      },
+      "id": "wf30-17",
+      "name": "Score (Blended)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $('Handle Research Result').first().json.lead_id, $('Handle Research Result').first().json.next_status, $('Handle Research Result').first().json.reason, $execution.id ] }}"
+        }
+      },
+      "id": "wf30-18",
+      "name": "Apply Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "wf30-19",
+      "name": "Pace Requests",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4440,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf30-20",
+      "name": "Research Sweep Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Hourly (Business Hours)": {
+      "main": [
+        [
+          {
+            "node": "Load Crawl Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Crawl Settings": {
+      "main": [
+        [
+          {
+            "node": "Claim Leads Needing Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Leads Needing Research": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Lead": {
+      "main": [
+        [
+          {
+            "node": "Research Sweep Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Plan Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Fetch": {
+      "main": [
+        [
+          {
+            "node": "Fetch robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Apply robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Any Pages Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Pages Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Expand Page URLs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing Fetchable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Page URLs": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Extract Text + Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nothing Fetchable": {
+      "main": [
+        [
+          {
+            "node": "Extract Text + Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text + Emails": {
+      "main": [
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Research Clinic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Research Clinic": {
+      "main": [
+        [
+          {
+            "node": "Handle Research Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Research Result": {
+      "main": [
+        [
+          {
+            "node": "Record Discovered Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Discovered Email": {
+      "main": [
+        [
+          {
+            "node": "Save Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Research": {
+      "main": [
+        [
+          {
+            "node": "Score (Blended)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score (Blended)": {
+      "main": [
+        [
+          {
+            "node": "Apply Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Status": {
+      "main": [
+        [
+          {
+            "node": "Pace Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pace Requests": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf30"
+  }
+}

@@ -1,0 +1,760 @@
+{
+  "name": "ACQ 40 \u2014 Personalization",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/20 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "wf40-00",
+      "name": "Every 20 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT (value)::boolean            FROM acq.settings WHERE key = 'outreach.auto_send_enabled')       AS auto_send,\n  (SELECT (value #>> '{}')::numeric   FROM acq.settings WHERE key = 'ai.min_email_confidence')          AS min_conf,\n  (SELECT  value                      FROM acq.settings WHERE key = 'guardrails.banned_phrases')        AS banned,\n  (SELECT (value #>> '{}')::int       FROM acq.settings WHERE key = 'guardrails.max_body_chars')        AS max_chars,\n  (SELECT (value #>> '{}')::int       FROM acq.settings WHERE key = 'guardrails.min_body_chars')        AS min_chars,\n  (SELECT  value                      FROM acq.settings WHERE key = 'guardrails.required_tokens')       AS required_tokens,\n  (SELECT  value                      FROM acq.settings WHERE key = 'product.capabilities')             AS capabilities,\n  (SELECT (value #>> '{}')            FROM acq.settings WHERE key = 'company.postal_address')           AS postal_address,\n  c.id AS campaign_id, c.mailbox_id, c.min_score_to_send\nFROM acq.campaigns c\nWHERE c.key = 'pk-karachi-tier1'",
+        "options": {}
+      },
+      "id": "wf40-01",
+      "name": "Load Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true,
+      "notes": "Campaign key is the one thing to change when you add a second market.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.phone,\n       l.whatsapp, l.public_email, l.domain, l.lead_score, l.doctor_count,\n       to_jsonb(r) - 'raw' AS research, r.confidence AS research_confidence\nFROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[], 10, $1) l\nJOIN acq.lead_research r ON r.lead_id = l.id AND r.is_current\nWHERE l.public_email IS NOT NULL\n  AND l.lead_score >= $2::int\n  AND NOT acq.is_suppressed(l.public_email::text, l.domain, NULL, l.id)\n  AND NOT EXISTS (\n    SELECT 1 FROM acq.emails e WHERE e.lead_id = l.id AND e.step_no = 0\n  )",
+        "options": {
+          "queryReplacement": "={{ [ 'wf40:' + $execution.id, $json.min_score_to_send ] }}"
+        }
+      },
+      "id": "wf40-02",
+      "name": "Claim Researched Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "Leads with no public email are never reached here \u2014 nothing invents one.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf40-03",
+      "name": "Per Lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://cloudflare-dns.com/dns-query?name={{ $json.public_email.split('@')[1] }}&type=MX",
+        "options": {
+          "timeout": 8000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/dns-json"
+            }
+          ]
+        }
+      },
+      "id": "wf40-04",
+      "name": "Check MX Records",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Free MX lookup. A domain with no mail exchanger will hard-bounce, and hard bounces are the fastest way to wreck a new sending domain.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const lead = $('Per Lead').first().json;\nconst r = $input.first().json;\nconst body = r.body ?? r;\n\n// DNS status 0 = NOERROR. Answer records of type 15 are MX records.\nconst answers = body?.Answer || [];\nconst hasMx = body?.Status === 0 && answers.some(a => a.type === 15);\n\n// A lookup that itself failed is not evidence of a bad domain, so it is treated\n// as inconclusive and allowed through rather than silently dropping the lead.\nconst inconclusive = r.statusCode && (r.statusCode < 200 || r.statusCode >= 300);\n\nreturn [{ json: {\n  ...lead,\n  mx_ok: hasMx || inconclusive,\n  mx_checked: !inconclusive,\n  mx_records: answers.filter(a => a.type === 15).map(a => a.data),\n}}];"
+      },
+      "id": "wf40-05",
+      "name": "Evaluate MX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Deliverable Domain?-c",
+              "leftValue": "={{ $json.mx_ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf40-06",
+      "name": "Deliverable Domain?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.apply_opt_out('DOMAIN', $1, 'NO_MX', 'MANUAL', $2::uuid, $3::jsonb) AS suppressed,\n       acq.transition_lead($2::uuid, 'INVALID', 'no_mx_records', 'SYSTEM') AS moved",
+        "options": {
+          "queryReplacement": "={{ [ $json.public_email.split('@')[1], $json.id, JSON.stringify({ checked_at: $now.toISO() }) ] }}"
+        }
+      },
+      "id": "wf40-07",
+      "name": "Suppress Undeliverable Domain",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1800,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  prompt_key: 'email_initial',\n  purpose: 'PERSONALIZE',\n  lead_id: j.id,\n  variables: {\n    lead_json: {\n      clinic_name: j.clinic_name, city: j.city, area: j.area,\n      category: j.category, website: j.website,\n      doctor_count: j.doctor_count, lead_score: j.lead_score,\n    },\n    research_json: j.research,\n  },\n}}];"
+      },
+      "id": "wf40-08",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf40-09",
+      "name": "AI: Write Email",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2240,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The second of two defences. The prompt asks for restraint; this enforces it.\n// Anything failing here is never queued \u2014 it goes to a human instead.\nconst lead = $('Evaluate MX').first().json;\nconst cfg = $('Load Settings').first().json;\nconst res = $input.first().json;\n\nfunction reject(reasons, extra = {}) {\n  return [{ json: { lead_id: lead.id, clinic_name: lead.clinic_name,\n                    passed: false, reasons, ...extra } }];\n}\n\nif (!res.ok) return reject([`ai_failed:${res.error}`]);\n\nconst d = res.data;\nconst subject = String(d.subject || '').trim();\nconst body = String(d.body_text || '').trim();\nconst reasons = [];\n\nconst banned = Array.isArray(cfg.banned) ? cfg.banned : [];\nconst hay = `${subject}\\n${body}`.toLowerCase();\nfor (const phrase of banned) {\n  if (hay.includes(String(phrase).toLowerCase().trim())) reasons.push(`banned_phrase:${phrase}`);\n}\n\nconst required = Array.isArray(cfg.required_tokens) ? cfg.required_tokens : [];\nfor (const tok of required) {\n  if (!body.includes(tok)) reasons.push(`missing_token:${tok}`);\n}\n\nif (body.length > (cfg.max_chars || 1400)) reasons.push(`too_long:${body.length}`);\nif (body.length < (cfg.min_chars || 350))  reasons.push(`too_short:${body.length}`);\nif (!subject) reasons.push('empty_subject');\nif (subject.length > 78) reasons.push(`subject_too_long:${subject.length}`);\nif (/^re:|^fwd:/i.test(subject)) reasons.push('fake_reply_subject');\n\n// Claims the product cannot back, and claims nobody should make in a cold email.\nif (/\\b(?:PKR|Rs\\.?|USD|\\$|\u20ac|\u00a3)\\s?\\d/i.test(body)) reasons.push('contains_price');\nif (/\\b(cure|treat|diagnos|patient outcome|clinically proven|medically)\\b/i.test(body))\n  reasons.push('medical_claim');\nif (/\\b(\\d+%|\\d+x)\\s*(more|increase|growth|revenue|bookings)\\b/i.test(body))\n  reasons.push('unsupported_statistic');\nif (/\\b(I called|I visited|I spoke|we spoke|as discussed|per our conversation)\\b/i.test(body))\n  reasons.push('fabricated_prior_contact');\n\n// More than one link reads as bulk mail and hurts deliverability.\nconst links = body.match(/https?:\\/\\/\\S+/g) || [];\nif (links.length > 1) reasons.push(`too_many_links:${links.length}`);\n\n// Every email must carry a real postal address, so refuse to build one until\n// company.postal_address is set.\nif (!String(cfg.postal_address || '').trim()) reasons.push('no_postal_address_configured');\n\nconst conf = Number(d.confidence ?? 0);\nconst minConf = Number(cfg.min_conf ?? 0.7);\n\nif (reasons.length) return reject(reasons, { subject, body_text: body, confidence: conf });\n\n// Passed the hard checks. Low confidence is not a rejection, it is a review.\nconst needsReview = !cfg.auto_send || conf < minConf;\n\nreturn [{ json: {\n  lead_id: lead.id,\n  clinic_name: lead.clinic_name,\n  to_email: lead.public_email,\n  campaign_id: cfg.campaign_id,\n  mailbox_id: cfg.mailbox_id,\n  passed: true,\n  subject,\n  body_text: body,\n  personalization_reason: d.personalization_reason || '',\n  suggested_feature: d.suggested_feature || '',\n  confidence: conf,\n  model: res.model,\n  prompt_version: res.prompt_version,\n  status: needsReview ? 'PENDING_APPROVAL' : 'READY_TO_SEND',\n  review_reason: !cfg.auto_send ? 'auto_send_disabled'\n                : (conf < minConf ? `low_confidence:${conf}` : null),\n  guardrail_report: { checks_passed: true, links: links.length, body_chars: body.length },\n}}];"
+      },
+      "id": "wf40-10",
+      "name": "Guardrails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Guardrails Passed?-c",
+              "leftValue": "={{ $json.passed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf40-11",
+      "name": "Guardrails Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.emails (\n  lead_id, campaign_id, mailbox_id, step_no, to_email, subject, body_text,\n  personalization_reason, suggested_feature, ai_confidence, model,\n  prompt_version, status, guardrail_report)\nVALUES ($1::uuid, $2::uuid, $3::uuid, 0, $4::citext, $5, $6,\n        $7, $8, $9::numeric, $10, $11, $12::acq.email_status, $13::jsonb)\nON CONFLICT (lead_id, campaign_id, step_no) DO NOTHING\nRETURNING id, status, unsubscribe_token",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, $json.campaign_id, $json.mailbox_id, $json.to_email, $json.subject, $json.body_text, $json.personalization_reason, $json.suggested_feature, $json.confidence, $json.model, $json.prompt_version, $json.status, JSON.stringify($json.guardrail_report) ] }}"
+        }
+      },
+      "id": "wf40-12",
+      "name": "Queue Email",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2900,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "ON CONFLICT DO NOTHING makes a re-run harmless: one email per lead per step.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.transition_lead($1::uuid,\n         CASE WHEN $2 = 'PENDING_APPROVAL' THEN 'READY_FOR_REVIEW'::acq.lead_status\n              ELSE 'APPROVED'::acq.lead_status END,\n         $3, 'AI', $4) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $('Guardrails').first().json.lead_id, $('Guardrails').first().json.status, ('draft_ready:' + ($('Guardrails').first().json.review_reason || 'auto')), $execution.id ] }}"
+        }
+      },
+      "id": "wf40-13",
+      "name": "Mark Lead Approved",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3120,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Needs Human Approval?-c",
+              "leftValue": "={{ $('Guardrails').first().json.status === 'PENDING_APPROVAL' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf40-14",
+      "name": "Needs Human Approval?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.approvals (kind, lead_id, email_id, title, payload, ai_confidence)\nVALUES ('EMAIL_DRAFT', $1::uuid, NULLIF($2,'')::uuid, $3, $4::jsonb, $5::numeric)\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $('Guardrails').first().json.lead_id, ($('Queue Email').first().json.id || ''), ('Approve outreach to ' + $('Guardrails').first().json.clinic_name), JSON.stringify({ subject: $('Guardrails').first().json.subject, body_text: $('Guardrails').first().json.body_text, to_email: $('Guardrails').first().json.to_email, reason: $('Guardrails').first().json.review_reason }), $('Guardrails').first().json.confidence ] }}"
+        }
+      },
+      "id": "wf40-15",
+      "name": "Create Approval Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3560,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH a AS (\n  INSERT INTO acq.approvals (kind, lead_id, title, payload, ai_confidence)\n  VALUES ('GUARDRAIL_FAILURE', $1::uuid, $2, $3::jsonb, $4::numeric)\n  RETURNING id\n)\nINSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, lead_id, error, payload)\nSELECT '40_personalization', $5, 'Guardrails', $1::uuid, $6, $3::jsonb FROM a",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ('Draft rejected for ' + $json.clinic_name), JSON.stringify({ reasons: $json.reasons, subject: $json.subject, body_text: $json.body_text }), ($json.confidence || 0), $execution.id, ('guardrails: ' + ($json.reasons || []).join(', ')) ] }}"
+        }
+      },
+      "id": "wf40-16",
+      "name": "Record Guardrail Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3780,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "A rejected draft is never silently discarded \u2014 it becomes a review item.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.transition_lead($1::uuid, 'READY_FOR_REVIEW', $2, 'SYSTEM', $3) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ('guardrail_failed:' + ($json.reasons || []).join(',')), $execution.id ] }}"
+        }
+      },
+      "id": "wf40-17",
+      "name": "Return Lead to Review",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "wf40-18",
+      "name": "Awaiting Approval",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4220,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf40-19",
+      "name": "Queued For Sending",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4440,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf40-20",
+      "name": "Batch Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 20 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Load Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Settings": {
+      "main": [
+        [
+          {
+            "node": "Claim Researched Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Researched Leads": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Lead": {
+      "main": [
+        [
+          {
+            "node": "Batch Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check MX Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check MX Records": {
+      "main": [
+        [
+          {
+            "node": "Evaluate MX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate MX": {
+      "main": [
+        [
+          {
+            "node": "Deliverable Domain?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliverable Domain?": {
+      "main": [
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Suppress Undeliverable Domain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suppress Undeliverable Domain": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Write Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Write Email": {
+      "main": [
+        [
+          {
+            "node": "Guardrails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Guardrails Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardrails Passed?": {
+      "main": [
+        [
+          {
+            "node": "Queue Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Guardrail Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Lead Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Lead Approved": {
+      "main": [
+        [
+          {
+            "node": "Needs Human Approval?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Human Approval?": {
+      "main": [
+        [
+          {
+            "node": "Create Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queued For Sending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Approval Request": {
+      "main": [
+        [
+          {
+            "node": "Awaiting Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Awaiting Approval": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queued For Sending": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Guardrail Failure": {
+      "main": [
+        [
+          {
+            "node": "Return Lead to Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Lead to Review": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf40"
+  }
+}

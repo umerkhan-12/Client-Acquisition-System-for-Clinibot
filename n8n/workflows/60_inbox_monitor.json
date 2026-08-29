@@ -1,0 +1,481 @@
+{
+  "name": "ACQ 60 \u2014 Inbox Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "format": "resolved",
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\"]",
+          "forceReconnect": 60
+        }
+      },
+      "id": "wf60-00",
+      "name": "New Mail (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "credentials": {
+        "imap": {
+          "id": "REPLACE_IMAP",
+          "name": "zenvexa-imap"
+        }
+      },
+      "notes": "IMAP idle on the outreach mailbox. Cheaper and more reliable at this volume than provider webhooks, and it sees replies AND bounces.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const m = $input.first().json;\n\n// n8n's resolved IMAP format varies a little by server, so read defensively.\nconst headers = m.headers || m.headerLines || {};\nconst hdr = (name) => {\n  const k = Object.keys(headers).find(x => x.toLowerCase() === name.toLowerCase());\n  const v = k ? headers[k] : undefined;\n  return Array.isArray(v) ? v.join(' ') : String(v ?? '');\n};\n\nconst fromRaw = m.from?.value?.[0]?.address || m.from?.text || m.from || '';\nconst fromEmail = String(fromRaw).match(/[^<\\s]+@[^>\\s]+/)?.[0]?.toLowerCase() || '';\nconst fromName = m.from?.value?.[0]?.name || '';\nconst subject = String(m.subject || '');\nconst text = String(m.textPlain || m.text || '');\nconst html = String(m.textHtml || '');\n\nconst isBounce =\n  /(mailer-daemon|postmaster|no-?reply@.*(mail|smtp))/i.test(fromEmail) ||\n  /^(undelivered|undeliverable|delivery status|returned mail|failure notice|mail delivery)/i.test(subject) ||\n  /multipart\\/report/i.test(hdr('content-type')) ||\n  /delivery-status-notification/i.test(hdr('content-type'));\n\nconst isAuto =\n  (hdr('auto-submitted') && !/^no$/i.test(hdr('auto-submitted'))) ||\n  !!hdr('x-autoreply') || !!hdr('x-autorespond') ||\n  /(bulk|auto_reply|auto-reply|list)/i.test(hdr('precedence')) ||\n  /^(out of office|automatic reply|auto:|autoreply)/i.test(subject);\n\n// For a bounce, the address that failed is inside the report body, not in From.\nlet bouncedAddress = null;\nif (isBounce) {\n  const body = `${text}\\n${html}`;\n  const candidates = body.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g) || [];\n  bouncedAddress = candidates.find(a =>\n    !/(mailer-daemon|postmaster|zenvexa\\.tech)/i.test(a))?.toLowerCase() || null;\n}\n\n// 5.x.x is permanent; 4.x.x is temporary and must not suppress an address.\nconst hardBounce = isBounce && /\\b5\\.\\d\\.\\d\\b/.test(`${text} ${subject}`);\n\nlet kind = 'HUMAN_REPLY';\nif (isBounce) kind = 'BOUNCE';\nelse if (isAuto) kind = 'AUTO_REPLY';\n\nreturn [{ json: {\n  kind,\n  hard_bounce: hardBounce,\n  message_id: m.messageId || hdr('message-id') || `imap-${Date.now()}-${Math.random()}`,\n  in_reply_to: hdr('in-reply-to') || null,\n  references: hdr('references') || null,\n  from_email: fromEmail,\n  from_name: fromName,\n  subject,\n  body_text: text.slice(0, 20000),\n  body_html: html.slice(0, 20000),\n  lookup_email: isBounce ? (bouncedAddress || fromEmail) : fromEmail,\n  received_at: m.date || new Date().toISOString(),\n}}];"
+      },
+      "id": "wf60-01",
+      "name": "Triage Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Matching is by recipient address first: at this volume every prospect has a\n-- unique address, and it survives clients that rewrite In-Reply-To. The\n-- correlation id is a secondary path.\nSELECT e.id AS email_id, e.lead_id, e.subject AS sent_subject,\n       e.body_text AS sent_body, e.step_no,\n       l.clinic_name, l.city, l.area, l.lead_score, l.category,\n       CASE WHEN e.message_id = $2 THEN 'CORRELATION_ID' ELSE 'FROM_EMAIL' END AS matched_by\nFROM acq.emails e\nJOIN acq.leads l ON l.id = e.lead_id\nWHERE (e.to_email = $1::citext OR ($2 <> '' AND e.message_id = $2))\n  AND e.status IN ('SENT','BOUNCED')\nORDER BY e.sent_at DESC NULLS LAST\nLIMIT 1",
+        "options": {
+          "queryReplacement": "={{ [ $json.lookup_email, ($json.in_reply_to || '') ] }}"
+        }
+      },
+      "id": "wf60-02",
+      "name": "Match To Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const msg = $('Triage Message').first().json;\nconst row = $input.first().json;\nconst matched = !!row?.lead_id;\nreturn [{ json: {\n  ...msg,\n  ...(matched ? row : {}),\n  matched,\n  route: matched ? msg.kind : 'UNMATCHED',\n}}];"
+      },
+      "id": "wf60-03",
+      "name": "Merge Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Message-0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "HUMAN_REPLY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HUMAN_REPLY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Message-1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "BOUNCE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "BOUNCE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Message-2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "AUTO_REPLY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AUTO_REPLY"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "wf60-04",
+      "name": "Route Message",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.replies (lead_id, email_id, message_id, in_reply_to, references_hdr,\n                         from_email, from_name, subject, body_text, body_html,\n                         is_auto_reply, is_bounce, matched_by, received_at)\nVALUES ($1::uuid, NULLIF($2,'')::uuid, $3, NULLIF($4,''), NULLIF($5,''),\n        $6::citext, $7, $8, $9, $10, false, false, $11, $12::timestamptz)\nON CONFLICT (message_id) DO NOTHING\nRETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ($json.email_id || ''), $json.message_id, ($json.in_reply_to || ''), ($json.references || ''), $json.from_email, ($json.from_name || ''), $json.subject, $json.body_text, ($json.body_html || ''), $json.matched_by, $json.received_at ] }}"
+        }
+      },
+      "id": "wf60-05",
+      "name": "Store Reply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1360,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "ON CONFLICT on message_id makes redelivery from IMAP harmless.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_reply($1::uuid) AS result",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "wf60-06",
+      "name": "Stop Follow-Ups Immediately",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1580,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Runs BEFORE classification on purpose. Whatever the reply says, and whether or not the AI is reachable, the sequence stops here.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 70 \u2014 Reply Classification",
+          "mode": "list",
+          "cachedResultName": "ACQ 70 \u2014 Reply Classification"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf60-07",
+      "name": "Classify Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 70 \u2014 Reply Classification' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const reply = $('Store Reply').first().json;\nconst ctx = $('Merge Match').first().json;\nreturn [{ json: { reply_id: reply.id, lead_id: ctx.lead_id } }];"
+      },
+      "id": "wf60-08",
+      "name": "Prepare Classification Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_bounce(NULLIF($1,'')::uuid, $2::boolean, $3, $4) AS result",
+        "options": {
+          "queryReplacement": "={{ [ ($json.email_id || ''), $json.hard_bounce, ($json.subject + ' :: ' + $json.body_text.slice(0, 400)), $json.lookup_email ] }}"
+        }
+      },
+      "id": "wf60-09",
+      "name": "Record Bounce",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2240,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Only 5.x.x permanent failures suppress the address. A 4.x.x temporary failure is recorded and retried.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.replies (lead_id, email_id, message_id, from_email, from_name,\n                         subject, body_text, is_auto_reply, matched_by, received_at)\nVALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4::citext, $5, $6, $7, true, $8, $9::timestamptz)\nON CONFLICT (message_id) DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, ($json.email_id || ''), $json.message_id, $json.from_email, ($json.from_name || ''), $json.subject, $json.body_text.slice(0, 2000), $json.matched_by, $json.received_at ] }}"
+        }
+      },
+      "id": "wf60-10",
+      "name": "Log Auto-Reply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "An out-of-office is not a reply: it is logged, and the sequence continues.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.dead_letters (workflow_key, execution_id, node_name, error, payload)\nVALUES ('60_inbox_monitor', $1, 'Match To Lead',\n        'inbound message could not be matched to any lead', $2::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id, JSON.stringify({ from: $json.from_email, subject: $json.subject, kind: $json.kind, excerpt: $json.body_text.slice(0, 500) }) ] }}"
+        }
+      },
+      "id": "wf60-11",
+      "name": "Record Unmatched Mail",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2680,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Mail from a stranger still gets a durable record \u2014 never dropped.",
+      "notesInFlow": false
+    }
+  ],
+  "connections": {
+    "New Mail (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Triage Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Message": {
+      "main": [
+        [
+          {
+            "node": "Match To Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match To Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Match": {
+      "main": [
+        [
+          {
+            "node": "Route Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Message": {
+      "main": [
+        [
+          {
+            "node": "Store Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Bounce",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Auto-Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Unmatched Mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Reply": {
+      "main": [
+        [
+          {
+            "node": "Stop Follow-Ups Immediately",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Follow-Ups Immediately": {
+      "main": [
+        [
+          {
+            "node": "Prepare Classification Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Classification Input": {
+      "main": [
+        [
+          {
+            "node": "Classify Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "tags": [
+    {
+      "name": "acq"
+    }
+  ],
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf60"
+  }
+}
