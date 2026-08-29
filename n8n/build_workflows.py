@@ -1037,17 +1037,14 @@ def wf_research():
     t = cron(b, "Hourly (Business Hours)", "0 6-14 * * 1-5")
 
     claim = pg(b, "Claim Leads Needing Research", """
-SELECT l.id, l.clinic_name, l.website, l.domain, l.city, l.area, l.category,
-       l.phone, l.whatsapp, l.public_email, l.doctor_count, l.source_url,
-       l.lead_score, l.raw
-FROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[],
+-- The predicate lives INSIDE the claim. Filtering after acq.claim_leads() would
+-- lock every lead it picked and then discard most of them, leaving them locked
+-- and unusable for 15 minutes and starving workflow 40 of the same status.
+SELECT id, clinic_name, website, domain, city, area, category,
+       phone, whatsapp, public_email, doctor_count, source_url, lead_score, raw
+FROM acq.claim_leads_for_research(
        (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'ai.max_research_per_run'),
-       $1) l
-WHERE l.website IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM acq.lead_research r
-     WHERE r.lead_id = l.id AND r.is_current AND r.stale_after > now()
-  )
+       $1)
 """.strip(),
         replacement="={{ [ 'wf30:' + $execution.id ] }}", always_output=True)
 
@@ -1483,17 +1480,14 @@ WHERE c.key = 'pk-karachi-tier1'
         notes="Campaign key is the one thing to change when you add a second market.")
 
     claim = pg(b, "Claim Researched Leads", """
+-- Every condition — has an email, has research, is not suppressed, has no
+-- step-0 email already — is applied inside the claim, so this workflow never
+-- locks a lead it cannot use. The join is guaranteed to match.
 SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.phone,
        l.whatsapp, l.public_email, l.domain, l.lead_score, l.doctor_count,
        to_jsonb(r) - 'raw' AS research, r.confidence AS research_confidence
-FROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[], 10, $1) l
+FROM acq.claim_leads_for_personalization(10, $1, $2::int) l
 JOIN acq.lead_research r ON r.lead_id = l.id AND r.is_current
-WHERE l.public_email IS NOT NULL
-  AND l.lead_score >= $2::int
-  AND NOT acq.is_suppressed(l.public_email::text, l.domain, NULL, l.id)
-  AND NOT EXISTS (
-    SELECT 1 FROM acq.emails e WHERE e.lead_id = l.id AND e.step_no = 0
-  )
 """.strip(),
         replacement="={{ [ 'wf40:' + $execution.id, $json.min_score_to_send ] }}",
         always_output=True,

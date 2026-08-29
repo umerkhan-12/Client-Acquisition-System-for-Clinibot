@@ -51,7 +51,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.phone,\n       l.whatsapp, l.public_email, l.domain, l.lead_score, l.doctor_count,\n       to_jsonb(r) - 'raw' AS research, r.confidence AS research_confidence\nFROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[], 10, $1) l\nJOIN acq.lead_research r ON r.lead_id = l.id AND r.is_current\nWHERE l.public_email IS NOT NULL\n  AND l.lead_score >= $2::int\n  AND NOT acq.is_suppressed(l.public_email::text, l.domain, NULL, l.id)\n  AND NOT EXISTS (\n    SELECT 1 FROM acq.emails e WHERE e.lead_id = l.id AND e.step_no = 0\n  )",
+        "query": "-- Every condition \u2014 has an email, has research, is not suppressed, has no\n-- step-0 email already \u2014 is applied inside the claim, so this workflow never\n-- locks a lead it cannot use. The join is guaranteed to match.\nSELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.phone,\n       l.whatsapp, l.public_email, l.domain, l.lead_score, l.doctor_count,\n       to_jsonb(r) - 'raw' AS research, r.confidence AS research_confidence\nFROM acq.claim_leads_for_personalization(10, $1, $2::int) l\nJOIN acq.lead_research r ON r.lead_id = l.id AND r.is_current",
         "options": {
           "queryReplacement": "={{ [ 'wf40:' + $execution.id, $json.min_score_to_send ] }}"
         }

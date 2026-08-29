@@ -291,7 +291,54 @@ BEGIN
 END $$;
 
 \echo ''
-\echo '=== 7. State machine refuses illegal transitions =================='
+\echo '=== 7. Claiming locks only leads the workflow can use ============='
+
+-- Regression guard. A claim that locks first and filters afterwards leaves
+-- unusable leads locked for 15 minutes and starves the next workflow of the
+-- same status; measured at 11 wasted locks out of 15 before this was fixed.
+INSERT INTO acq.leads (market_id, clinic_name, city, category, priority_tier,
+                       website, phone, source, source_url, lead_score, status)
+SELECT m.id, 'Claim Test ' || g, 'Karachi', 'DENTAL', 1,
+       CASE WHEN g <= 3 THEN 'https://claimtest' || g || '.pk' END,
+       '0219000' || lpad(g::text, 4, '0'),
+       'TEST', 'https://claimtest/' || g, 70, 'QUALIFIED'
+FROM acq.markets m, generate_series(1, 12) g WHERE m.code = 'PK';
+
+DO $$
+DECLARE returned int; wasted int;
+BEGIN
+  SELECT count(*) INTO returned FROM acq.claim_leads_for_research(12, 'smoke-wf30');
+  SELECT count(*) INTO wasted FROM acq.leads
+   WHERE locked_by = 'smoke-wf30' AND website IS NULL;
+
+  IF wasted > 0 THEN
+    RAISE EXCEPTION 'FAIL: % leads locked that the workflow cannot research', wasted;
+  END IF;
+  IF returned <> 3 THEN
+    RAISE EXCEPTION 'FAIL: expected 3 researchable leads, got %', returned;
+  END IF;
+  RAISE NOTICE 'PASS: claim locked only the 3 usable leads, none wasted';
+END $$;
+
+\echo ''
+\echo '=== 8. Readiness reports what still blocks sending ================'
+
+SELECT severity, check_name, left(detail, 66) AS detail
+FROM acq.readiness() WHERE severity = 'BLOCKER';
+
+DO $$
+DECLARE n int;
+BEGIN
+  -- postal address and unsubscribe URL ship empty on purpose
+  SELECT count(*) INTO n FROM acq.readiness() WHERE severity = 'BLOCKER';
+  IF n < 2 THEN
+    RAISE EXCEPTION 'FAIL: readiness() should flag the unset send-blockers, found %', n;
+  END IF;
+  RAISE NOTICE 'PASS: readiness() reports % blocker(s) before first send', n;
+END $$;
+
+\echo ''
+\echo '=== 9. State machine refuses illegal transitions =================='
 
 SELECT acq.transition_lead(
   (SELECT id FROM acq.leads WHERE clinic_name = 'Load Test Clinic 3'),

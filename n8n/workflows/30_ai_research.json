@@ -24,7 +24,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT l.id, l.clinic_name, l.website, l.domain, l.city, l.area, l.category,\n       l.phone, l.whatsapp, l.public_email, l.doctor_count, l.source_url,\n       l.lead_score, l.raw\nFROM acq.claim_leads(ARRAY['QUALIFIED']::acq.lead_status[],\n       (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'ai.max_research_per_run'),\n       $1) l\nWHERE l.website IS NOT NULL\n  AND NOT EXISTS (\n    SELECT 1 FROM acq.lead_research r\n     WHERE r.lead_id = l.id AND r.is_current AND r.stale_after > now()\n  )",
+        "query": "-- The predicate lives INSIDE the claim. Filtering after acq.claim_leads() would\n-- lock every lead it picked and then discard most of them, leaving them locked\n-- and unusable for 15 minutes and starving workflow 40 of the same status.\nSELECT id, clinic_name, website, domain, city, area, category,\n       phone, whatsapp, public_email, doctor_count, source_url, lead_score, raw\nFROM acq.claim_leads_for_research(\n       (SELECT (value #>> '{}')::int FROM acq.settings WHERE key = 'ai.max_research_per_run'),\n       $1)",
         "options": {
           "queryReplacement": "={{ [ 'wf30:' + $execution.id ] }}"
         }

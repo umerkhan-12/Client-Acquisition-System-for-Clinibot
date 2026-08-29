@@ -43,6 +43,29 @@ CREATE DATABASE zenvexa_acq OWNER acq_app;
 
 **Observability** — `ai_calls`, `workflow_runs`, `dead_letters`
 
+## Claiming work
+
+`acq.claim_leads()` is the generic claimer, used where every claimed lead is
+usable (workflow 20). Workflows 30 and 40 use purpose-built claimers instead —
+`claim_leads_for_research()` and `claim_leads_for_personalization()` — because
+filtering *after* a generic claim locks leads the workflow cannot use.
+
+Measured before this was fixed: asking for 15 leads of which 3 were researchable
+returned 3 rows but left **15 locked**, 11 of them uselessly, for 15 minutes.
+The next workflow, claiming the same `QUALIFIED` status, then found 5 leads
+instead of 16. Running hourly and every twenty minutes, the two would have
+starved each other indefinitely. Section 7 of the smoke test guards it.
+
+## Is it ready to send?
+
+```sql
+SELECT * FROM acq.readiness();
+```
+
+Returns one row per check, severity `BLOCKER` / `WARN` / `OK` / `INFO`. A
+`BLOCKER` is a condition the workflows themselves refuse to run past — not
+advice. `scripts/bootstrap.sh` prints it as its last step.
+
 ## Four design decisions worth explaining
 
 ### Identity keys, not a pile of unique columns

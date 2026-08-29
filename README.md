@@ -34,30 +34,33 @@ Everything in this repository was executed, not just written:
 | | Status |
 |---|---|
 | SQL migrations | Applied to PostgreSQL 16.13, idempotent, rebuild clean from scratch |
-| Dedup, scoring, rate limits, opt-out, state machine | **8 assertions in `scripts/smoke_test.sql`, all passing** |
+| Dedup, scoring, rate limits, opt-out, work claiming, state machine | **10 assertions in `scripts/smoke_test.sql`, all passing** |
+| Code-node logic — parsers, guardrails, robots.txt, bounce detection | **57 tests in `scripts/test_code_nodes.mjs`, run against the committed workflow JSON** |
 | SQL inside the workflows | **All 65 statements `PREPARE`-checked against the live schema** |
 | Workflow JSON | Structurally validated — no duplicate names, no dangling connections, no unreachable nodes |
 | Prompt loader | Round-trips all 8 registrations through `acq.get_prompt()`; the build fails if any registered prompt is unreachable from a workflow |
 | Deliverability checker | **21 self-tests over SPF/DKIM/DMARC/MX evaluation, all passing** |
 | Dashboard | Typechecks, builds, and renders live data over a least-privilege role |
 | `docker-compose.yml` | `docker compose config` valid, required-variable guards fire |
+| `bootstrap.sh` | Runs end to end from an empty database to a readiness report |
 | **The workflows running end to end in n8n** | **Not verified** — needs your credentials and a live n8n |
 | **Gemini prompt output quality** | **Not verified** — that is Phase 2's job, and it needs your judgement |
 
-Two real bugs were caught by that verification and fixed: a two-statement query
-the Postgres driver cannot execute, and a state-machine hole that let an
-opted-out lead be moved back toward contact.
+Four real bugs were caught by that verification and fixed: a two-statement query
+the Postgres driver cannot execute; a state-machine hole that let an opted-out
+lead be moved back toward contact; a prompt that was loaded and documented but
+never called by any workflow; and — the one that would have stopped the pipeline
+working at all — a claim query that locked 15 leads to use 4, leaving 11 locked
+and starving the next workflow of the same status.
 
 ## Quickstart
 
 ```bash
-# 1. database
-createdb zenvexa_acq
-for f in db/migrations/*.sql; do psql -v ON_ERROR_STOP=1 -d zenvexa_acq -f "$f"; done
-python3 scripts/load_prompts.py | psql -v ON_ERROR_STOP=1 -d zenvexa_acq
+# 1. database, migrations, prompts, smoke test, readiness report — one command
+./scripts/bootstrap.sh zenvexa_acq
 
-# 2. prove it works before trusting it (asserts, then rolls back)
-psql -v ON_ERROR_STOP=1 -d zenvexa_acq -f scripts/smoke_test.sql
+# 2. the workflow logic (parsers, guardrails, bounce detection)
+node scripts/test_code_nodes.mjs
 
 # 3. check the sending domain BEFORE any of this touches a real clinic
 ./scripts/check_deliverability.sh your-sending-domain.tld <dkim-selector>
@@ -67,6 +70,9 @@ cp .env.example .env      # fill it in
 docker compose up -d n8n
 # then import n8n/workflows/*.json — see n8n/README.md
 ```
+
+`bootstrap.sh` finishes by printing `acq.readiness()`, which names every setting
+still blocking the first send. Two ship deliberately unset.
 
 Then follow [`docs/09-build-order.md`](docs/09-build-order.md). **Do not
 activate all 13 workflows at once.** Nothing reaches a real clinic before

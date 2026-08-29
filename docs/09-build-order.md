@@ -16,12 +16,13 @@ Nothing runs yet.
 - [ ] Create the mailbox (Zoho Mail Lite ~$1/mo, or Google Workspace)
 - [ ] Publish SPF, DKIM, DMARC (`p=none`), MX — [06-deliverability.md](06-deliverability.md)
 - [ ] `./scripts/check_deliverability.sh sending-domain.tld <selector>` exits 0
-- [ ] `createdb zenvexa_acq`, run all migrations, load prompts
-- [ ] `psql -f scripts/smoke_test.sql` — all assertions pass
+- [ ] `./scripts/bootstrap.sh zenvexa_acq` — migrations, prompts, smoke test, readiness
+- [ ] `node scripts/test_code_nodes.mjs` — 57 workflow-logic tests pass
 - [ ] Second n8n container up, credentials created, workflows imported
 - [ ] Telegram bot created, `notify.telegram_chat_id` set
 
-**Done when** the smoke test passes and a Telegram test message arrives.
+**Done when** `bootstrap.sh` reports only the two intended blockers, and a
+Telegram test message arrives.
 
 ---
 

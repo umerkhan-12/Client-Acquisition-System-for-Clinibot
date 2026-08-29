@@ -7,7 +7,15 @@ builder and regenerate rather than editing JSON by hand.
 python3 build_workflows.py                      # regenerate
 python3 ../scripts/gen_workflow_docs.py         # regenerate docs/02-workflows.md
 python3 ../scripts/validate_workflow_sql.py | psql -d zenvexa_acq   # type-check the SQL
+node ../scripts/test_code_nodes.mjs             # run the Code nodes against fixtures
 ```
+
+`test_code_nodes.mjs` extracts the real `jsCode` out of the committed JSON — not
+a copy — and runs it under a small shim of the n8n runtime. A failure there means
+the deployed node is wrong. It covers the logic most likely to break: the OSM
+normalizer, the robots.txt reader, email extraction, both guardrail passes,
+bounce vs auto-reply detection, reply classification routing, and the AI response
+validator.
 
 The builder validates as it writes: duplicate node names, connections to
 non-existent nodes, and unreachable non-trigger nodes all fail the build.

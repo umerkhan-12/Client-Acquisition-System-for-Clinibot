@@ -9,6 +9,7 @@ day. It warns explicitly when bounce rate exceeds 2%, complaint rate exceeds
 If you would rather look yourself:
 
 ```sql
+SELECT * FROM acq.readiness() WHERE severity IN ('BLOCKER','WARN');
 SELECT * FROM acq.v_overview;
 SELECT * FROM acq.v_deliverability;
 SELECT * FROM acq.v_approval_queue LIMIT 20;
