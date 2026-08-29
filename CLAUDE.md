@@ -133,6 +133,17 @@ docs/            00 is the audit — read it first
 - Sending stays off by default: `outreach.auto_send_enabled` and
   `outreach.auto_reply_enabled` are both `false`.
 
+## Operating it
+
+`.claude/commands/` holds slash commands for each phase: `/status`, `/verify`,
+`/phase1` through `/phase5`, `/daily`. They check their own preconditions and
+stop rather than running ahead — `/phase3` will not send until the
+deliverability checks pass and the unsubscribe link has been clicked.
+
+`docs/12-getting-your-first-client.md` lists what only a human can do (domain,
+mailbox, DNS, keys, and deciding what Clinibot actually does today) and the
+funnel arithmetic behind the timeline.
+
 ## Current state
 
 Branch `claude/n8n-clinic-acquisition-k0tb6s`. Built and verified; **not
