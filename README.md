@@ -41,14 +41,14 @@ Everything in this repository was executed, not just written:
 | Prompt loader | Round-trips all 8 registrations through `acq.get_prompt()`; the build fails if any registered prompt is unreachable from a workflow |
 | Deliverability checker | **21 self-tests over SPF/DKIM/DMARC/MX evaluation, all passing** |
 | Dashboard | Typechecks, builds, and renders live data over a least-privilege role |
-| `docker-compose.yml` | `docker compose config` valid, required-variable guards fire |
+| `docker-compose.yml` | `docker compose config` valid, guards fire, and **all 29 env vars verified against a real n8n** (`scripts/check_n8n_env.sh`) |
 | `bootstrap.sh` | Runs end to end from an empty database to a readiness report |
 | Workflow JSON accepted by n8n | **All 13 imported into a real n8n instance** (`scripts/validate_in_n8n.sh`) |
 | A workflow actually running | **Workflow 20 executed in real n8n against a real database**, qualifying 3 clinics and rejecting a hospital, a pharmacy and a lead with no contact channel |
 | **The workflows that call external APIs** | **Not verified** — Places, Gemini, SMTP and IMAP need your credentials |
 | **Gemini prompt output quality** | **Not verified** — that is Phase 2's job, and it needs your judgement |
 
-Six real bugs were caught by that verification and fixed:
+Seven real bugs were caught by that verification and fixed:
 
 1. A two-statement query the Postgres driver cannot execute.
 2. A state-machine hole letting an opted-out lead be moved back toward contact.
@@ -59,6 +59,9 @@ Six real bugs were caught by that verification and fixed:
 6. **A scoring gate that rejected every lead**, because the deterministic and
    blended phases shared a threshold calibrated for the blended one. Found only
    by executing a workflow and looking at what it did.
+7. **A compose file that described the n8n UI as password-protected when it was
+   not** — n8n removed `N8N_BASIC_AUTH_*` and ignores unknown variables
+   silently.
 
 The last two are the argument for `scripts/validate_in_n8n.sh`: structural
 validation says the JSON is well-formed, and it was — while being unimportable

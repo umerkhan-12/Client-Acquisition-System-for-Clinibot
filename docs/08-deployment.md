@@ -64,6 +64,12 @@ The n8n service is configured with:
 - `GENERIC_TIMEZONE=Asia/Karachi` — so cron expressions mean local time.
 - `N8N_ENCRYPTION_KEY` — **set this and back it up.** Lose it and every stored
   credential becomes unreadable.
+- **Access control.** n8n removed `N8N_BASIC_AUTH_*`, and ignores unknown
+  variables silently — a compose file still listing them describes a protected
+  UI that is wide open. Authentication is now n8n's own owner account, created
+  the first time you open the UI. Create it immediately after `up`.
+  `scripts/check_n8n_env.sh` verifies every variable the compose file sets is
+  still honoured by your n8n version; re-run it after upgrading.
 - `EXECUTIONS_DATA_PRUNE=true` with a 14-day window — execution history grows
   fast with loops.
 - `N8N_PROTOCOL=https` and `WEBHOOK_URL` — the unsubscribe link is built from
@@ -119,8 +125,27 @@ n8n.yourdomain.tld {
 }
 ```
 
-Only `/webhook/*` needs to be public. The n8n UI should sit behind
-authentication or, better, be reachable only over a VPN or SSH tunnel.
+**Only `/webhook/*` needs to be public** — workflows 100 and 110. Everything
+else, including the UI, should not be:
+
+```
+n8n.yourdomain.tld {
+    # the only paths the outside world needs
+    @webhooks path /webhook/* /webhook-test/*
+    reverse_proxy @webhooks n8n-acq:5678
+
+    respond 404
+}
+```
+
+Reach the UI over an SSH tunnel instead:
+
+```bash
+ssh -L 5679:localhost:5679 you@droplet   # then http://localhost:5679
+```
+
+If you do expose the UI, set `N8N_SECURE_COOKIE=true` and `N8N_PROXY_HOPS=1`,
+and create the owner account before the proxy goes live.
 
 ## Backups
 

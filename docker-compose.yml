@@ -8,6 +8,11 @@
 #
 #   docker compose up -d n8n              # alongside an existing Postgres
 #   docker compose --profile dev up -d    # plus a throwaway local Postgres
+#
+# Every environment variable below was checked against the n8n release this
+# was developed on (2.35.7) with scripts/check_n8n_env.sh. Re-run it after
+# upgrading n8n — variables do get removed, and n8n ignores unknown ones
+# silently rather than failing to start.
 # =====================================================================
 
 services:
@@ -16,32 +21,78 @@ services:
     container_name: n8n-acq
     restart: unless-stopped
     ports:
-      # Bound to loopback: put a reverse proxy in front rather than
-      # exposing the UI. Only /webhook/* needs to be public.
+      # Loopback only. n8n has no HTTP auth of its own to fall back on (see
+      # the note below), so the UI must not be reachable from the internet
+      # without something in front of it.
       - "127.0.0.1:5679:5678"
     environment:
+      # ---- identity and webhooks -----------------------------------
+      # Generate once and BACK IT UP. Lose it and every stored credential
+      # becomes permanently unreadable: openssl rand -hex 32
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
       N8N_HOST: ${N8N_HOST:-localhost}
       N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      # The unsubscribe link in every email is built from this. Getting it
+      # wrong means opt-out links that 404, which is worse than none at all.
       WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5679/}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Karachi}
       TZ: ${GENERIC_TIMEZONE:-Asia/Karachi}
 
-      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
-      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:?set N8N_BASIC_AUTH_PASSWORD in .env}
+      # ---- ACCESS CONTROL ------------------------------------------
+      # n8n REMOVED N8N_BASIC_AUTH_* . Setting them does nothing: n8n ignores
+      # unknown variables silently, so a compose file that still lists them
+      # looks protected and is not.
+      #
+      # Authentication is now n8n's own owner account, created the first time
+      # you open the UI. Do that immediately after `up`, before putting
+      # anything in front of it.
+      #
+      # Behind a TLS-terminating proxy set N8N_SECURE_COOKIE=true. Over plain
+      # HTTP (an SSH tunnel to localhost) it must be false or login silently
+      # fails to persist.
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      # Number of proxies in front of n8n, so client IPs and rate limiting
+      # are computed from the right hop.
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-0}
+      # Nothing here uses the public REST API; leaving it on is surface area.
+      N8N_PUBLIC_API_DISABLED: "true"
 
-      # The loops in workflows 10, 30 and 50 generate a lot of execution
-      # history. Without pruning, n8n's own database outgrows yours.
+      # ---- workflow sandboxing --------------------------------------
+      # Credentials live in n8n's encrypted store and are injected into nodes.
+      # Blocking env access stops a Code node reading them out of process.env.
+      # None of the 13 workflows read environment variables.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: ${N8N_RESTRICT_FILE_ACCESS_TO:-/tmp}
+      N8N_PAYLOAD_SIZE_MAX: "16"
+
+      # ---- execution history ----------------------------------------
+      # The loops in workflows 10, 30 and 50 generate a lot of history.
+      # Without pruning, n8n's own database outgrows yours.
       EXECUTIONS_DATA_PRUNE: "true"
       EXECUTIONS_DATA_MAX_AGE: "336"          # 14 days
       EXECUTIONS_DATA_SAVE_ON_SUCCESS: "all"
       EXECUTIONS_DATA_SAVE_ON_ERROR: "all"
       EXECUTIONS_DATA_SAVE_ON_PROGRESS: "false"
 
+      # ---- noise ----------------------------------------------------
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
       N8N_LOG_LEVEL: "info"
+
+      # ---- n8n's own database ---------------------------------------
+      # SQLite in the volume is fine at this volume. To put n8n's own state on
+      # the Postgres you already run, set these in .env instead — note it is a
+      # SEPARATE database from zenvexa_acq; do not point them at the same one.
+      DB_TYPE: ${N8N_DB_TYPE:-sqlite}
+      DB_POSTGRESDB_HOST: ${N8N_DB_HOST:-}
+      DB_POSTGRESDB_PORT: ${N8N_DB_PORT:-5432}
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME:-}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER:-}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:-}
     volumes:
       - n8n_acq_data:/home/node/.n8n
       # Read-only mount so workflows can be imported from the CLI:
