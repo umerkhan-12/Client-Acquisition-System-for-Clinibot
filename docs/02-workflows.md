@@ -186,7 +186,7 @@ A lead that qualifies but has no website goes to `READY_FOR_REVIEW` rather than 
 
 ## ACQ 30 — AI Research
 
-**File** `n8n/workflows/30_ai_research.json` · **21 nodes**
+**File** `n8n/workflows/30_ai_research.json` · **25 nodes**
 
 The only workflow that reads clinic websites, and the only place a hallucination can enter the pipeline.
 
@@ -195,6 +195,8 @@ It fetches `robots.txt` first and honours `Disallow` for both `*` and its own ag
 Email addresses found verbatim on a clinic's own page are recorded with **that page's URL as evidence**, which is what makes them facts rather than guesses. An address on the clinic's own domain is preferred, since a stray address on a clinic site is more often the web designer's.
 
 Results cache for `ai.research_ttl_days` (90 by default), so no clinic is researched twice for free.
+
+Research is followed by a separate **qualification pass** (`score_lead`). Extraction and judgement are deliberately different calls: a prompt asked to both find facts and decide whether to contact someone starts promoting its inferences to facts, because that makes the decision easier to justify. The qualification pass can only be more restrictive than research — it rejects on `recommend_contact: false` or any disqualifier, and sends a `WEAK` fit tier to human review — and if it fails, the research verdict stands with no signals patched.
 
 **Trigger** — Schedule trigger (cron `0 6-14 * * 1-5`)
 
@@ -219,10 +221,14 @@ Results cache for `ai.research_ttl_days` (90 by default), so no clinic is resear
 | 15 | Handle Research Result | Code |  |
 | 16 | Record Discovered Email | Postgres | `UPDATE acq.leads` |
 | 17 | Save Research | Postgres | `WITH archived AS (` |
-| 18 | Score (Blended) | Postgres | `SELECT acq.compute_score($1::uuid, 'BLENDED') AS score` |
-| 19 | Apply Status | Postgres | `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS res` |
-| 20 | Pace Requests | Wait | 3 seconds |
-| 21 | Research Sweep Complete | No-op |  |
+| 18 | Build Qualification Input | Code |  |
+| 19 | AI: Qualify Lead | Call workflow | → ACQ 01 — AI Call |
+| 20 | Merge Qualification | Code |  |
+| 21 | Apply Qualification Signals | Postgres | `UPDATE acq.lead_research` |
+| 22 | Score (Blended) | Postgres | `SELECT acq.compute_score($1::uuid, 'BLENDED') AS score` |
+| 23 | Apply Status | Postgres | `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS res` |
+| 24 | Pace Requests | Wait | 3 seconds |
+| 25 | Research Sweep Complete | No-op |  |
 
 **Database operations**
 
@@ -230,10 +236,11 @@ Results cache for `ai.research_ttl_days` (90 by default), so no clinic is resear
 - **Load Crawl Settings** — `SELECT (SELECT  value #>> '{}'       FROM acq.settings WHERE key = 'discovery.`
 - **Record Discovered Email** — `UPDATE acq.leads`
 - **Save Research** — `WITH archived AS (`
+- **Apply Qualification Signals** — `UPDATE acq.lead_research`
 - **Score (Blended)** — `SELECT acq.compute_score($1::uuid, 'BLENDED') AS score`
 - **Apply Status** — `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS res`
 
-**Error handling** — retries on: `Claim Leads Needing Research`, `Fetch robots.txt`, `Load Crawl Settings`, `Fetch Page`, `Record Discovered Email`, `Save Research`, `Score (Blended)`, `Apply Status`. continues past failure at: `Fetch robots.txt`, `Fetch Page`, `Record Discovered Email`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+**Error handling** — retries on: `Claim Leads Needing Research`, `Fetch robots.txt`, `Load Crawl Settings`, `Fetch Page`, `Record Discovered Email`, `Save Research`, `Apply Qualification Signals`, `Score (Blended)`, `Apply Status`. continues past failure at: `Fetch robots.txt`, `Fetch Page`, `Record Discovered Email`, `Apply Qualification Signals`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
 
 ---
 

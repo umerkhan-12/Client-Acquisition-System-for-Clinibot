@@ -37,7 +37,7 @@ Everything in this repository was executed, not just written:
 | Dedup, scoring, rate limits, opt-out, state machine | **8 assertions in `scripts/smoke_test.sql`, all passing** |
 | SQL inside the workflows | **All 65 statements `PREPARE`-checked against the live schema** |
 | Workflow JSON | Structurally validated — no duplicate names, no dangling connections, no unreachable nodes |
-| Prompt loader | Round-trips all 8 registrations through `acq.get_prompt()` |
+| Prompt loader | Round-trips all 8 registrations through `acq.get_prompt()`; the build fails if any registered prompt is unreachable from a workflow |
 | Deliverability checker | **21 self-tests over SPF/DKIM/DMARC/MX evaluation, all passing** |
 | Dashboard | Typechecks, builds, and renders live data over a least-privilege role |
 | `docker-compose.yml` | `docker compose config` valid, required-variable guards fire |

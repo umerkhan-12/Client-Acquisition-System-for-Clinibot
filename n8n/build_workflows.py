@@ -14,8 +14,10 @@ The generated JSON is committed, so nothing here is needed at runtime.
 """
 import json
 import pathlib
+import re
 import sys
 
+ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 OUT = pathlib.Path(__file__).resolve().parent / "workflows"
 
 # --------------------------------------------------------------------------
@@ -1332,16 +1334,108 @@ RETURNING id
                     "$json.prompt_version, JSON.stringify($json.fetched_urls), "
                     "$json.robots_allowed ] }}")
 
+    # ---- qualification pass -------------------------------------------
+    # research_clinic extracts facts; score_lead judges what they mean. Keeping
+    # those separate means the extraction prompt is never also asked to decide
+    # whether to contact someone, which is where "helpful" models start
+    # promoting inferences to facts.
+    qual_in = code(b, "Build Qualification Input", r"""
+const src = $('Handle Research Result').first().json;
+const lead = $('Extract Text + Emails').first().json;
+return [{ json: {
+  prompt_key: 'score_lead',
+  purpose: 'SCORE',
+  lead_id: src.lead_id,
+  variables: {
+    lead_json: {
+      clinic_name: lead.clinic_name, city: lead.city, area: lead.area,
+      category: lead.category, website: lead.website,
+      public_email: lead.public_email || lead.discovered_email,
+      phone: lead.phone, whatsapp: lead.whatsapp, lead_score: lead.lead_score,
+    },
+    research_json: src.research,
+  },
+}}];
+""".strip())
+
+    qual_ai = call_workflow(b, "AI: Qualify Lead", "ACQ 01 — AI Call")
+
+    qual_merge = code(b, "Merge Qualification", r"""
+// Decides the lead's final status from BOTH passes. A failed qualification call
+// is not treated as approval: the research verdict stands and nothing is
+// patched, so the lead simply proceeds on the weaker evidence.
+const research = $('Handle Research Result').first().json;
+const res = $input.first().json;
+
+if (!res.ok) {
+  return [{ json: {
+    lead_id: research.lead_id,
+    qualification: null,
+    next_status: research.next_status,
+    reason: research.reason + `;qualification_failed:${res.error}`,
+  }}];
+}
+
+const q = res.data;
+const disq = Array.isArray(q.disqualifiers) ? q.disqualifiers : [];
+
+// The qualification pass can only ever be MORE restrictive than the research
+// pass. It can reject a lead research let through; it cannot rescue one
+// research already rejected.
+let next_status = research.next_status;
+let reason = research.reason;
+
+if (research.next_status !== 'REJECTED') {
+  if (q.recommend_contact === false || disq.length) {
+    next_status = 'REJECTED';
+    reason = `not_recommended:${disq.join(',') || q.fit_tier}`;
+  } else if (q.fit_tier === 'WEAK') {
+    next_status = 'READY_FOR_REVIEW';
+    reason = `weak_fit:${q.reasoning || ''}`.slice(0, 200);
+  }
+}
+
+return [{ json: {
+  lead_id: research.lead_id,
+  qualification: q,
+  fit_tier: q.fit_tier,
+  next_status,
+  reason,
+}}];
+""".strip())
+
+    qual_write = pg(b, "Apply Qualification Signals", """
+-- Overlays the qualification pass's signals onto the cached research, using the
+-- same keys acq.compute_score() already reads. The full verdict is kept under
+-- raw.qualification so a score can be explained months later. The `? 'signals'`
+-- guard makes this a no-op when the qualification call failed.
+UPDATE acq.lead_research
+   SET raw = raw || jsonb_build_object(
+         'advertises_appointments', ($2::jsonb -> 'signals' ->> 'appointment_driven')::boolean,
+         'high_value_services',     ($2::jsonb -> 'signals' ->> 'high_value_services')::boolean,
+         'active_social_presence',  ($2::jsonb -> 'signals' ->> 'active_online_presence')::boolean,
+         'qualification',           $2::jsonb),
+       has_whatsapp = COALESCE(($2::jsonb -> 'signals' ->> 'whatsapp_is_a_contact_channel')::boolean,
+                               has_whatsapp),
+       has_online_booking = COALESCE(($2::jsonb -> 'signals' ->> 'has_online_booking')::boolean,
+                                     has_online_booking)
+ WHERE lead_id = $1::uuid
+   AND is_current
+   AND $2::jsonb ? 'signals'
+""".strip(),
+        replacement="={{ [ $json.lead_id, JSON.stringify($json.qualification) ] }}",
+        on_error="continueRegularOutput")
+
     rescore = pg(b, "Score (Blended)",
                  "SELECT acq.compute_score($1::uuid, 'BLENDED') AS score",
-                 replacement="={{ [ $('Handle Research Result').first().json.lead_id ] }}")
+                 replacement="={{ [ $('Merge Qualification').first().json.lead_id ] }}")
 
     apply = pg(b, "Apply Status", """
 SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS result
 """.strip(),
-        replacement="={{ [ $('Handle Research Result').first().json.lead_id, "
-                    "$('Handle Research Result').first().json.next_status, "
-                    "$('Handle Research Result').first().json.reason, $execution.id ] }}")
+        replacement="={{ [ $('Merge Qualification').first().json.lead_id, "
+                    "$('Merge Qualification').first().json.next_status, "
+                    "$('Merge Qualification').first().json.reason, $execution.id ] }}")
 
     pause = wait_node(b, "Pace Requests", 3)
 
@@ -1352,7 +1446,8 @@ SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS resul
     b.chain(expand, fetch_page, extract)
     b.connect(any_pages, no_fetch, src_out=1)
     b.connect(no_fetch, extract)
-    b.chain(extract, ai_in, ai, handle, save_email, save, rescore, apply, pause)
+    b.chain(extract, ai_in, ai, handle, save_email, save,
+            qual_in, qual_ai, qual_merge, qual_write, rescore, apply, pause)
     b.connect(pause, loop)
     b.connect(loop, b.node("Research Sweep Complete", "n8n-nodes-base.noOp", {}, tv=1), src_out=0)
     return b.build()
@@ -2852,10 +2947,41 @@ WORKFLOWS = [
 ]
 
 
+def check_prompt_coverage(problems):
+    """Every prompt loaded into acq.prompts must be reachable from something.
+
+    A registered-but-uncalled prompt is worse than a missing one: it reads as
+    part of the pipeline in the docs and in the database, and silently is not.
+    Keys are reached either directly (a prompt_key in this file) or indirectly
+    via acq.sequence_steps.prompt_key, which workflow 80 resolves at runtime.
+    """
+    prompt_dir = ROOT_DIR / "prompts"
+    seed = (ROOT_DIR / "db" / "migrations" / "005_seed_config.sql").read_text()
+    src = pathlib.Path(__file__).read_text()
+
+    registered = set()
+    for f in prompt_dir.glob("*.md"):
+        head = f.read_text().split("---")[1]
+        for line in head.splitlines():
+            if line.startswith("key:"):
+                registered.add(line.split(":", 1)[1].strip())
+            elif line.startswith("also_keys:"):
+                registered.update(k.strip() for k in line.split(":", 1)[1].split(","))
+
+    reached = set(re.findall(r"prompt_key: '([a-z0-9_]+)'", src))
+    reached |= set(re.findall(r"'(followup_[a-z0-9_]+)'", seed))
+
+    for orphan in sorted(registered - reached):
+        problems.append(
+            f"prompt {orphan!r} is registered in prompts/ but no workflow calls it")
+    return len(registered), len(registered & reached)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     total_nodes = 0
     problems = []
+    n_prompts, n_reached = check_prompt_coverage(problems)
 
     for filename, fn in WORKFLOWS:
         doc = fn()
@@ -2887,6 +3013,7 @@ def main():
         return 1
 
     print(f"\n{len(WORKFLOWS)} workflows, {total_nodes} nodes, all structurally valid.")
+    print(f"{n_reached}/{n_prompts} registered prompts reachable from a workflow.")
     return 0
 
 

@@ -97,7 +97,16 @@ NARRATIVE = {
         "than guesses. An address on the clinic's own domain is preferred, since "
         "a stray address on a clinic site is more often the web designer's.\n\n"
         "Results cache for `ai.research_ttl_days` (90 by default), so no clinic "
-        "is researched twice for free."),
+        "is researched twice for free.\n\n"
+        "Research is followed by a separate **qualification pass** "
+        "(`score_lead`). Extraction and judgement are deliberately different "
+        "calls: a prompt asked to both find facts and decide whether to contact "
+        "someone starts promoting its inferences to facts, because that makes "
+        "the decision easier to justify. The qualification pass can only be "
+        "more restrictive than research — it rejects on `recommend_contact: "
+        "false` or any disqualifier, and sends a `WEAK` fit tier to human "
+        "review — and if it fails, the research verdict stands with no signals "
+        "patched."),
     "40_personalization": (
         "Two things stand between the model and a real clinic's inbox.\n\n"
         "First a **free MX check** over Cloudflare DNS-over-HTTPS. A domain with "

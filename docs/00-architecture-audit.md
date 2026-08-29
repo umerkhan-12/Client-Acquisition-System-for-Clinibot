@@ -169,8 +169,12 @@ each backed by a cited fact. Consequences:
   no new AI spend at all.
 - Two clinics with identical signals always get identical scores.
 
-The `score_lead` prompt exists and is production-ready; it returns signals,
-disqualifiers and a fit tier rather than a number.
+The `score_lead` prompt runs in workflow 30 as a second pass over the research
+brief, returning signals, disqualifiers and a fit tier rather than a number. Its
+signals feed `compute_score()`; its `recommend_contact` verdict can reject a
+lead outright. Separating it from `research_clinic` keeps fact extraction and
+judgement in different calls, which is what stops a single prompt quietly
+promoting its own inferences to facts in order to justify a decision.
 
 ### 8. Ship with the human approval gate ON
 

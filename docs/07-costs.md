@@ -47,7 +47,7 @@ dedup-before-Details ordering.
 | | Cost |
 |---|---|
 | Discovery (OSM) | $0 |
-| Gemini: ~100 research + ~40 emails + ~10 classifications | ~$1 |
+| Gemini: ~100 research + ~100 qualify + ~40 emails + ~10 classifications | ~$1 |
 | Fixed | ~$2 |
 | **Total** | **~$3/month** |
 
@@ -70,10 +70,10 @@ billed Details call.
 |---|---|
 | Places text search (~200 calls) | ~$6 |
 | Places details (~1,000 month 1, ~250 steady state) | ~$17 → ~$4 |
-| Gemini | ~$8 |
+| Gemini | ~$10 |
 | Fixed | ~$2 |
-| **Month 1** | **~$33** |
-| **Steady state** | **~$20** |
+| **Month 1** | **~$35** |
+| **Steady state** | **~$22** |
 
 At this point 1,000 leads/month produces maybe 250-400 emailable leads, which at
 20/day is about right for one mailbox.
@@ -98,10 +98,10 @@ the generic outreach the brief explicitly rules out. The constraint is not cost.
 At 1,000 leads/month, month one:
 
 ```
-Places Details   ████████████████████████  ~$17   52%
-Gemini           ███████████               ~$8    24%
-Places Search    ████████                  ~$6    18%
-Fixed            ███                       ~$2     6%
+Places Details   ██████████████████████    ~$17   49%
+Gemini           █████████████             ~$10   29%
+Places Search    ████████                  ~$6    17%
+Fixed            ███                       ~$2     5%
 ```
 
 Two things follow:

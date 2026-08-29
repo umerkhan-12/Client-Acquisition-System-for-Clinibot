@@ -374,18 +374,96 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const src = $('Handle Research Result').first().json;\nconst lead = $('Extract Text + Emails').first().json;\nreturn [{ json: {\n  prompt_key: 'score_lead',\n  purpose: 'SCORE',\n  lead_id: src.lead_id,\n  variables: {\n    lead_json: {\n      clinic_name: lead.clinic_name, city: lead.city, area: lead.area,\n      category: lead.category, website: lead.website,\n      public_email: lead.public_email || lead.discovered_email,\n      phone: lead.phone, whatsapp: lead.whatsapp, lead_score: lead.lead_score,\n    },\n    research_json: src.research,\n  },\n}}];"
+      },
+      "id": "wf30-17",
+      "name": "Build Qualification Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf30-18",
+      "name": "AI: Qualify Lead",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        4220,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Decides the lead's final status from BOTH passes. A failed qualification call\n// is not treated as approval: the research verdict stands and nothing is\n// patched, so the lead simply proceeds on the weaker evidence.\nconst research = $('Handle Research Result').first().json;\nconst res = $input.first().json;\n\nif (!res.ok) {\n  return [{ json: {\n    lead_id: research.lead_id,\n    qualification: null,\n    next_status: research.next_status,\n    reason: research.reason + `;qualification_failed:${res.error}`,\n  }}];\n}\n\nconst q = res.data;\nconst disq = Array.isArray(q.disqualifiers) ? q.disqualifiers : [];\n\n// The qualification pass can only ever be MORE restrictive than the research\n// pass. It can reject a lead research let through; it cannot rescue one\n// research already rejected.\nlet next_status = research.next_status;\nlet reason = research.reason;\n\nif (research.next_status !== 'REJECTED') {\n  if (q.recommend_contact === false || disq.length) {\n    next_status = 'REJECTED';\n    reason = `not_recommended:${disq.join(',') || q.fit_tier}`;\n  } else if (q.fit_tier === 'WEAK') {\n    next_status = 'READY_FOR_REVIEW';\n    reason = `weak_fit:${q.reasoning || ''}`.slice(0, 200);\n  }\n}\n\nreturn [{ json: {\n  lead_id: research.lead_id,\n  qualification: q,\n  fit_tier: q.fit_tier,\n  next_status,\n  reason,\n}}];"
+      },
+      "id": "wf30-19",
+      "name": "Merge Qualification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Overlays the qualification pass's signals onto the cached research, using the\n-- same keys acq.compute_score() already reads. The full verdict is kept under\n-- raw.qualification so a score can be explained months later. The `? 'signals'`\n-- guard makes this a no-op when the qualification call failed.\nUPDATE acq.lead_research\n   SET raw = raw || jsonb_build_object(\n         'advertises_appointments', ($2::jsonb -> 'signals' ->> 'appointment_driven')::boolean,\n         'high_value_services',     ($2::jsonb -> 'signals' ->> 'high_value_services')::boolean,\n         'active_social_presence',  ($2::jsonb -> 'signals' ->> 'active_online_presence')::boolean,\n         'qualification',           $2::jsonb),\n       has_whatsapp = COALESCE(($2::jsonb -> 'signals' ->> 'whatsapp_is_a_contact_channel')::boolean,\n                               has_whatsapp),\n       has_online_booking = COALESCE(($2::jsonb -> 'signals' ->> 'has_online_booking')::boolean,\n                                     has_online_booking)\n WHERE lead_id = $1::uuid\n   AND is_current\n   AND $2::jsonb ? 'signals'",
+        "options": {
+          "queryReplacement": "={{ [ $json.lead_id, JSON.stringify($json.qualification) ] }}"
+        }
+      },
+      "id": "wf30-20",
+      "name": "Apply Qualification Signals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4660,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
         "operation": "executeQuery",
         "query": "SELECT acq.compute_score($1::uuid, 'BLENDED') AS score",
         "options": {
-          "queryReplacement": "={{ [ $('Handle Research Result').first().json.lead_id ] }}"
+          "queryReplacement": "={{ [ $('Merge Qualification').first().json.lead_id ] }}"
         }
       },
-      "id": "wf30-17",
+      "id": "wf30-21",
       "name": "Score (Blended)",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        4000,
+        4880,
         300
       ],
       "credentials": {
@@ -403,15 +481,15 @@
         "operation": "executeQuery",
         "query": "SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS result",
         "options": {
-          "queryReplacement": "={{ [ $('Handle Research Result').first().json.lead_id, $('Handle Research Result').first().json.next_status, $('Handle Research Result').first().json.reason, $execution.id ] }}"
+          "queryReplacement": "={{ [ $('Merge Qualification').first().json.lead_id, $('Merge Qualification').first().json.next_status, $('Merge Qualification').first().json.reason, $execution.id ] }}"
         }
       },
-      "id": "wf30-18",
+      "id": "wf30-22",
       "name": "Apply Status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        4220,
+        5100,
         300
       ],
       "credentials": {
@@ -430,23 +508,23 @@
         "amount": 3,
         "unit": "seconds"
       },
-      "id": "wf30-19",
+      "id": "wf30-23",
       "name": "Pace Requests",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        4440,
+        5320,
         300
       ]
     },
     {
       "parameters": {},
-      "id": "wf30-20",
+      "id": "wf30-24",
       "name": "Research Sweep Complete",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        4660,
+        5540,
         300
       ]
     }
@@ -643,6 +721,50 @@
       ]
     },
     "Save Research": {
+      "main": [
+        [
+          {
+            "node": "Build Qualification Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Qualification Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Qualify Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Qualify Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Qualification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Qualification": {
+      "main": [
+        [
+          {
+            "node": "Apply Qualification Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Qualification Signals": {
       "main": [
         [
           {

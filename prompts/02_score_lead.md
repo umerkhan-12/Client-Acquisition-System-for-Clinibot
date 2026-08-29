@@ -5,6 +5,11 @@ purpose: SCORE
 temperature: 0.0
 active: true
 notes: >
+  Runs in workflow 30, immediately after research_clinic, as a second pass.
+  research_clinic extracts facts; this decides what they mean. Its signals are
+  overlaid onto the cached research and read by acq.compute_score(); its
+  recommend_contact and disqualifiers can reject a lead the research pass let
+  through, but cannot rescue one research already rejected.
   Deliberately does NOT return the 0-100 number. acq.compute_score() owns the
   arithmetic so that every score is reproducible, explainable after the fact,
   and re-tunable across the whole database by editing one config row. This

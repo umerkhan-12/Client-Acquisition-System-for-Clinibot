@@ -59,6 +59,21 @@ described as only "potentially" available.
 disqualifiers. `acq.compute_score()` does the arithmetic. See
 [the audit, finding 7](00-architecture-audit.md#7-ai-should-supply-the-signals-not-the-score).
 
+It runs in workflow 30 as a **second pass over the research brief**, not over
+raw web pages. Splitting extraction from judgement matters: a prompt asked to
+both find facts and decide whether to contact someone starts promoting its
+inferences to facts, because that makes the decision easier to justify.
+
+Its signals are overlaid onto the cached research under the same keys
+`compute_score()` already reads, and the full verdict is kept in
+`lead_research.raw.qualification` so a score can be explained months later. The
+pass can only ever be **more** restrictive than research: `recommend_contact:
+false` or any disqualifier rejects the lead, and a `WEAK` fit tier sends it to
+human review — but it cannot rescue a lead research already rejected.
+
+If the call fails, the research verdict stands and no signals are patched. The
+lead proceeds on weaker evidence rather than being silently approved.
+
 ### Opt-out beats everything in classification
 
 `classify_reply` is instructed that any removal request makes the class
