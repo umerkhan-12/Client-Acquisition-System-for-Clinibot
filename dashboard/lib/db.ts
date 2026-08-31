@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { SUPABASE_ROOT_CA } from "./supabase-ca";
 
 /**
  * Postgres connection to Supabase.
@@ -39,11 +40,13 @@ export const pool =
     // The dashboard is read-mostly; a slow query is a bug, not something to
     // wait out behind a page that never renders.
     statement_timeout: 10_000,
-    // Supabase requires TLS. `rejectUnauthorized: true` is the point of using
-    // it — turning it off, as a lot of copied snippets do, keeps the
-    // encryption and discards the authentication, which is what actually
-    // stops someone answering in Supabase's place.
-    ssl: { rejectUnauthorized: true },
+    // Supabase requires TLS, and its pooler is signed by Supabase's own
+    // private root — not one Node ships with. Passing that CA is what makes
+    // `rejectUnauthorized: true` actually work here; without it `pg` throws
+    // "self-signed certificate in certificate chain", and the usual answer
+    // (rejectUnauthorized: false) keeps the encryption while discarding the
+    // authentication that stops someone answering in Supabase's place.
+    ssl: { rejectUnauthorized: true, ca: SUPABASE_ROOT_CA },
   });
 
 if (process.env.NODE_ENV !== "production") globalForPg.acqPool = pool;

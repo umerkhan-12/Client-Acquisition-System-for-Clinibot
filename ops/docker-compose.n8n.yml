@@ -85,6 +85,15 @@ services:
       # error appears in the log and in n8n's execution list.
       NODE_OPTIONS: "--max-old-space-size=${N8N_HEAP_MB:-512}"
 
+      # Supabase's pooler presents a chain rooted in Supabase's OWN private CA
+      # ("Supabase Root 2021 CA"), which is not in Node's trust store — so the
+      # Postgres node fails with "self-signed certificate in certificate
+      # chain". The usual fix found online is allowUnauthorizedCerts, which
+      # keeps the encryption and throws away the authentication: you are then
+      # encrypted to whoever answered. Trusting the actual CA instead keeps
+      # both, and verified chain validation at verify-full.
+      NODE_EXTRA_CA_CERTS: /opt/certs/supabase-root-2021.crt
+
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
       N8N_TEMPLATES_ENABLED: "false"
@@ -96,6 +105,9 @@ services:
       # Read-only, so the 13 workflows can be imported from the CLI:
       #   docker compose exec n8n n8n import:workflow --separate --input=/workflows
       - ./n8n/workflows:/workflows:ro
+      # Public CA certificate, not a secret. Committed so a rebuild does not
+      # silently lose TLS verification.
+      - ./ops/supabase-root-2021.crt:/opt/certs/supabase-root-2021.crt:ro
     networks: [acq]
 
   caddy:
