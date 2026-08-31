@@ -32,7 +32,18 @@ die()  { printf '\n\033[31mFAILED: %s\033[0m\n' "$1" >&2; exit 1; }
 set -a; . ./.env; set +a
 
 [ -n "${SUPABASE_ADMIN_URL:-}" ] || die "SUPABASE_ADMIN_URL not set in .env"
-command -v psql >/dev/null 2>&1 || die "psql not installed"
+
+# The direct connection host (db.<ref>.supabase.co) publishes only an AAAA
+# record on the free tier — no IPv4. It resolves fine from most laptops and
+# then fails from a droplet that has no IPv6 route, which is a confusing way
+# to lose an evening. The pooler is dual-stack; use it everywhere.
+case "$SUPABASE_ADMIN_URL" in
+  *db.*.supabase.co*)
+    echo "  NOTE: that is the DIRECT connection string, which is IPv6-only on"
+    echo "        the free tier. It may work from here and fail from the"
+    echo "        droplet. Prefer the pooler host (aws-*.pooler.supabase.com)."
+    ;;
+esac
 
 # ---------------------------------------------------------------------
 # Supabase installs extensions into the `extensions` schema rather than
@@ -47,7 +58,28 @@ export PGOPTIONS="-c search_path=acq,public,extensions"
 # Fail on the first error rather than continuing and reporting success at the
 # end, and never wrap the whole run in one transaction: CREATE INDEX
 # CONCURRENTLY and similar cannot run inside one.
-PSQL=(psql "$SUPABASE_ADMIN_URL" -v ON_ERROR_STOP=1 --no-psqlrc -q)
+#
+# psql, or a containerised psql when it is not installed. Windows has no psql
+# by default and installing Postgres just to run ten files is a poor trade —
+# the repo is mounted read-only at /repo and every path below is relative, so
+# both branches take identical arguments.
+if command -v psql >/dev/null 2>&1; then
+  PSQL=(psql "$SUPABASE_ADMIN_URL" -v ON_ERROR_STOP=1 --no-psqlrc -q)
+elif command -v docker >/dev/null 2>&1; then
+  echo "    psql not installed — using postgres:16-alpine in Docker"
+  mount_src="$here"
+  # Git Bash hands Docker a POSIX path it cannot resolve. `cygpath -m` returns
+  # the Windows form with forward slashes, which is exactly what Docker wants.
+  # Absent on Linux and macOS, where $here is already correct.
+  if command -v cygpath >/dev/null 2>&1; then
+    mount_src="$(cygpath -m "$here")"
+  fi
+  export MSYS_NO_PATHCONV=1
+  PSQL=(docker run --rm -i -e PGOPTIONS="$PGOPTIONS" -v "${mount_src}:/repo:ro" -w /repo
+        postgres:16-alpine psql "$SUPABASE_ADMIN_URL" -v ON_ERROR_STOP=1 --no-psqlrc -q)
+else
+  die "neither psql nor docker is available — one is needed to apply migrations"
+fi
 
 step "Target"
 if [ "$DRY" -eq 1 ]; then
@@ -85,15 +117,27 @@ step "Extensions"
     WHERE extname IN ('pgcrypto','citext','pg_trgm') ORDER BY 1" \
   | sed 's/^/    /'
 
+# Windows installs the interpreter as `python`; Linux and macOS as `python3`.
+#
+# Probe by RUNNING it, not with `command -v`. Windows ships an App Execution
+# Alias stub at WindowsApps/python3 which exists on PATH and resolves happily,
+# then prints "Python was not found" and exits non-zero. `command -v` finds the
+# stub and reports success, so the check has to actually execute something.
+PY=""
+for cand in python3 python py; do
+  if "$cand" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then PY="$cand"; break; fi
+done
+[ -n "$PY" ] || die "no working python found (tried python3, python, py)"
+
 step "Prompts"
 # load_prompts.py pins its stdout to UTF-8. Without that, on Windows the
 # default code page emits byte 0x97 for an em dash and Postgres rejects the
 # statement carrying it — inside a transaction that still reports success.
 if [ "$DRY" -eq 1 ]; then
-  python3 scripts/load_prompts.py >/dev/null || die "prompt generation"
-  echo "    would load $(grep -c 'INSERT INTO acq.prompts' <(python3 scripts/load_prompts.py) || true) prompts"
+  "$PY" scripts/load_prompts.py >/dev/null || die "prompt generation"
+  echo "    would load $(grep -c 'INSERT INTO acq.prompts' <("$PY" scripts/load_prompts.py) || true) prompts"
 else
-  python3 scripts/load_prompts.py | "${PSQL[@]}" || die "prompt load"
+  "$PY" scripts/load_prompts.py | "${PSQL[@]}" || die "prompt load"
   "${PSQL[@]}" -tAc "SELECT count(*) || ' prompts active' FROM acq.prompts WHERE active" \
     | sed 's/^/    /'
 fi
