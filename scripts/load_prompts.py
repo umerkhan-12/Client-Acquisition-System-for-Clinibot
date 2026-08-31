@@ -69,6 +69,16 @@ def section(body: str, heading: str) -> str:
 
 
 def main() -> int:
+    # This script's entire output is piped into psql, which speaks UTF-8. On
+    # Windows Python defaults stdout to the ANSI code page (cp1252 here), and
+    # every em dash in a prompt then leaves as the single byte 0x97 — not valid
+    # UTF-8. Postgres rejects the statement carrying it, so a prompt silently
+    # fails to register while the surrounding transaction reports success.
+    #
+    # Observed on Windows 11 / Python 3.13: 47 corrupted bytes in one run.
+    # It is not even consistent between runs, which is worse than a hard error.
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
     files = sorted(PROMPT_DIR.glob("*.md"))
     if not files:
         print("no prompt files found", file=sys.stderr)
@@ -80,7 +90,7 @@ def main() -> int:
 
     loaded = 0
     for path in files:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         try:
             meta, body = parse_frontmatter(text)
             system = section(body, "System")

@@ -247,13 +247,13 @@ def main():
     ]
     files = sorted(WF.glob("*.json"), key=lambda p: int(p.stem.split("_")[0]))
     for f in files:
-        doc = json.loads(f.read_text())
+        doc = json.loads(f.read_text(encoding="utf-8"))
         lines.append(f"- [{doc['name']}](#{doc['name'].lower().replace(' ', '-').replace('—','').replace('--','-')}) "
                      f"— `{f.name}`")
     lines += ["", "---", ""]
 
     for f in files:
-        doc = json.loads(f.read_text())
+        doc = json.loads(f.read_text(encoding="utf-8"))
         key = f.stem
         nodes = doc["nodes"]
 
@@ -308,7 +308,7 @@ def main():
             "",
         ]
 
-    OUT.write_text("\n".join(lines))
+    OUT.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     print(f"wrote {OUT.relative_to(ROOT)} ({len(lines)} lines) from {len(files)} workflows")
 
 

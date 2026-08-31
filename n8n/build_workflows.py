@@ -369,7 +369,8 @@ def wf_ai_call():
 SELECT acq.get_prompt($1) AS prompt,
        (SELECT jsonb_object_agg(key, value) FROM acq.settings
          WHERE key IN ('company.brand','company.product','company.sender_person',
-                       'product.capabilities','demo.booking_url','ai.model','ai.pricing')
+                       'product.capabilities','product.not_yet','demo.booking_url',
+                       'ai.model','ai.pricing')
        ) AS settings
 """.strip(), replacement="={{ $json.prompt_key }}")
 
@@ -385,7 +386,13 @@ if (!prompt) {
 }
 
 const caps = settings['product.capabilities'] || [];
+// The other half of the whitelist. `capabilities` stops the model inventing a
+// feature; `not_yet` stops it hedging when a clinic asks about one we do not
+// have. A prospect told "no, not yet, here is what it does instead" keeps
+// talking; one who is dodged stops believing the rest of the email too.
+const notYet = settings['product.not_yet'] || [];
 const bookingUrl = settings['demo.booking_url'] || '';
+const asBullets = (v) => Array.isArray(v) ? v.map(c => `- ${c}`).join('\n') : String(v);
 
 // Globals every prompt may reference, merged under caller-supplied variables so
 // a caller can override for a specific market or language.
@@ -393,7 +400,8 @@ const vars = Object.assign({
   brand:                 settings['company.brand'] || 'Zenvexa',
   product:               settings['company.product'] || 'Clinibot',
   sender_person:         settings['company.sender_person'] || 'Umer',
-  capabilities:          Array.isArray(caps) ? caps.map(c => `- ${c}`).join('\n') : String(caps),
+  capabilities:          asBullets(caps),
+  not_yet:               asBullets(notYet),
   booking_url_or_none:   bookingUrl || 'none — do not invent availability',
   language:              'English',
 }, input.variables || {});
@@ -2953,12 +2961,12 @@ def check_prompt_coverage(problems):
     via acq.sequence_steps.prompt_key, which workflow 80 resolves at runtime.
     """
     prompt_dir = ROOT_DIR / "prompts"
-    seed = (ROOT_DIR / "db" / "migrations" / "005_seed_config.sql").read_text()
-    src = pathlib.Path(__file__).read_text()
+    seed = (ROOT_DIR / "db" / "migrations" / "005_seed_config.sql").read_text(encoding="utf-8")
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
 
     registered = set()
     for f in prompt_dir.glob("*.md"):
-        head = f.read_text().split("---")[1]
+        head = f.read_text(encoding="utf-8").split("---")[1]
         for line in head.splitlines():
             if line.startswith("key:"):
                 registered.add(line.split(":", 1)[1].strip())
@@ -2999,7 +3007,7 @@ def main():
 
         text = json.dumps(doc, indent=2)
         json.loads(text)                       # must round-trip
-        (OUT / f"{filename}.json").write_text(text + "\n")
+        (OUT / f"{filename}.json").write_text(text + "\n", encoding="utf-8")
         total_nodes += len(doc["nodes"])
         print(f"  {filename+'.json':<34} {len(doc['nodes']):>3} nodes")
 

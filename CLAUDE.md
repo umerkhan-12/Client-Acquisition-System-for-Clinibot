@@ -59,7 +59,7 @@ node scripts/test_code_nodes.mjs         # 57 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
 python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 65 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests
-(cd dashboard && npx tsc --noEmit)
+(cd dashboard && npx tsc --noEmit)       # deps installed; also: npx next build
 ```
 
 Occasionally, and after any change to the builder:
@@ -108,17 +108,31 @@ Each of these was a real bug, found late. They are easy to reintroduce.
 - **Every registered prompt must be reachable from a workflow.** The builder
   fails otherwise; a loaded-but-uncalled prompt reads as part of the pipeline
   and silently is not.
+- **An unpriced model silently disables the AI cost cap.** `01_ai_call` costs a
+  call with `(ctx.pricing || {})[ctx.model] || {}`, so a model missing from
+  `ai.pricing` costs $0.00 forever and `ai.daily_cost_cap_usd` can never trip.
+  It bites specifically when copying Clinibot's pinned `GEMINI_MODEL`, which is
+  not in the default table. `acq.readiness()` now BLOCKS on it (migration 009).
+- **Python file I/O must name its encoding.** Every `read_text`/`write_text` and
+  every script that pipes SQL to psql pins `utf-8` explicitly. Without it, on
+  Windows the builder dies on its own em dashes and `load_prompts.py` emits
+  byte `0x97`, which Postgres rejects as invalid UTF-8 — so a prompt fails to
+  register inside a transaction that reports success.
 
 ## Layout
 
 ```
-db/migrations/   8 SQL migrations — the actual logic. Idempotent, ordered.
+db/migrations/   10 SQL migrations — the actual logic. Idempotent, ordered.
 db/prisma/       Prisma models for the NestJS backend later. NOT a migration source.
 n8n/             build_workflows.py -> workflows/*.json (13 workflows, 182 nodes)
 prompts/         6 prompts, loaded into acq.prompts by scripts/load_prompts.py
-dashboard/       Next.js admin view; reads 5 views, writes only the approval queue
+dashboard/       Next.js admin view on Vercel; magic-link auth + allowlist,
+                 reads 5 views as acq_dashboard, writes only the approval queue
 scripts/         bootstrap, smoke test, SQL validator, code-node tests, deliverability
-docs/            00 is the audit — read it first
+ops/             migrate-supabase.sh, Caddyfile, docker-compose.n8n.yml
+                 oracle/ = Always Free host; self-hosted/ = one-droplet fallback
+.claude/commands/ /status /verify /deploy /phase1..5 /daily — operator entry points
+docs/            00 is the audit — read it first; 12 is the go-to-market path
 ```
 
 ## Conventions
@@ -129,21 +143,40 @@ docs/            00 is the audit — read it first
 - `alwaysOutputData` on claim queries so an empty batch still reaches the
   run-recording node.
 - No secret in this repository. Workflow JSON carries placeholder credential
-  ids (`REPLACE_PG`); real values live in n8n's encrypted store.
+  ids (`REPLACE_PG`); real values live in n8n's encrypted store, and migration
+  010 creates both database roles without passwords so none is ever committed.
+- Least privilege at the database. `acq_n8n` runs the workflows; `acq_dashboard`
+  reads five views and decides the approval queue, and cannot read `acq.leads`,
+  `acq.opt_outs` or cached research. Neither may run DDL — only
+  `SUPABASE_ADMIN_URL`, from a laptop, can.
+- **Never add `acq` to Supabase's exposed-schema list.** PostgREST over scraped
+  contact data, gated by RLS somebody has to get right every time, is how a
+  Supabase project leaks. Keeping the schema off that list removes the class.
 - Sending stays off by default: `outreach.auto_send_enabled` and
   `outreach.auto_reply_enabled` are both `false`.
 
 ## Current state
 
 Branch `claude/n8n-clinic-acquisition-k0tb6s`. Built and verified; **not
-deployed anywhere** — no container running, no DNS record, no email ever sent.
+deployed yet** — no email ever sent.
 
-Verified: migrations, 12 behavioural assertions, 65 SQL statements type-checked,
-57 Code-node tests, all 13 workflows importing into real n8n, one executed
-against a real database, dashboard building and rendering live data.
+Target: Supabase (database) + an existing DigitalOcean n8n (workflows) +
+Vercel (dashboard). `ops/self-hosted/` still holds the one-droplet stack as a
+fallback. See `docs/08-deployment.md`.
+
+Verified: 9 migrations on a clean database, 8 prompts, 12 behavioural
+assertions, 65 SQL statements type-checked (0 errors), 57 Code-node tests,
+13 workflows / 182 nodes, 19 deliverability self-tests, all 13 workflows
+importing into real n8n, one executed against a real database.
 
 Not verified: anything needing credentials (Google Places, Gemini, SMTP, IMAP),
-and prompt output quality — that is Phase 2 and needs human judgement.
+prompt output quality — that is Phase 2 and needs human judgement — and the
+dashboard type-check, which needs `npm install` in `dashboard/` first.
+
+`product.capabilities` was rebuilt in migration 009 from the Clinibot source at
+`../clinibot/clinibot-backend/src`, not from the brief. Three of the brief's
+claims were wrong; the payment one materially so — Clinibot records a claimed
+advance payment for staff to verify, and never processes money.
 
 Next: `docs/09-build-order.md`. Phase 1 is discovery only, no AI and no email.
 The number that matters is what share of discovered clinics publish a usable

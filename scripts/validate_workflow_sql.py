@@ -16,12 +16,18 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WF = ROOT / "n8n" / "workflows"
 
+# Piped into psql, which speaks UTF-8. Windows defaults stdout to the ANSI code
+# page, turning every em dash in an embedded SQL comment into the lone byte 0x97
+# and making Postgres reject that statement with "invalid byte sequence" — which
+# reads exactly like a SQL error in a statement that is actually fine.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
 print("\\set ON_ERROR_STOP 0")
 print("SET search_path = acq, public;")
 
 count = 0
 for path in sorted(WF.glob("*.json")):
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     for node in doc["nodes"]:
         if node["type"] != "n8n-nodes-base.postgres":
             continue

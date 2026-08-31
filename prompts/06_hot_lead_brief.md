@@ -1,6 +1,6 @@
 ---
 key: hot_lead_brief
-version: v1
+version: v2
 purpose: HOT_LEAD
 temperature: 0.2
 active: true
@@ -47,8 +47,13 @@ Pick exactly one, and be honest that some need a human:
 - Quote the prospect's own words for the key line. Do not paraphrase the ask.
 - Use only facts from the research brief in `why_qualified`. If the brief is
   thin, list fewer points rather than padding.
-- If they asked something you cannot answer from the allowed capability list,
-  say so plainly in `open_questions`.
+- If they asked about something on the "not yet" list, put the honest answer in
+  `open_questions` in the form *"They asked X — the true answer is no, and the
+  nearest thing it does is Y."* Do not soften it and do not leave it out. The
+  founder is about to be asked this to their face, and finding out during the
+  demo is how a warm lead turns cold.
+- If they asked something covered by neither list, say so plainly in
+  `open_questions` rather than guessing.
 - Never invent availability, pricing, or a commitment.
 - `draft_reply` is a suggestion for a human to edit and send. Keep it under 100
   words, answer what was asked, and never quote a price.
@@ -78,7 +83,14 @@ Brief me on this prospect.
 ```
 
 Booking link available: {{booking_url_or_none}}
-Allowed product capabilities: {{capabilities}}
+
+### What the product does (the only things that may be claimed)
+
+{{capabilities}}
+
+### What it does NOT do yet — answer these honestly if asked
+
+{{not_yet}}
 
 ## Response Schema
 

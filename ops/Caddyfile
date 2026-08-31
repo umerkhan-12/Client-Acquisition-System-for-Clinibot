@@ -1,0 +1,65 @@
+# =====================================================================
+# The only thing this server exposes to the internet.
+#
+# Two workflows need a public HTTPS endpoint and nothing else does:
+#
+#   110_unsubscribe  — /webhook/unsubscribe. Every email carries this link.
+#                      It MUST work from any browser, forever, including long
+#                      after a campaign ends. A dead opt-out link is both a
+#                      CAN-SPAM problem and the fastest way to earn a spam
+#                      complaint from someone who tried to leave politely.
+#   100_demo_crm     — /webhook/demo-booked, called by the booking tool.
+#
+# Everything else — the n8n UI above all — stays private. n8n's only
+# authentication is an owner account created on first visit; between `up` and
+# that first visit, an exposed instance is an open remote-code-execution
+# console. Reach the UI over SSH instead:
+#
+#   ssh -L 5679:127.0.0.1:5679 acq     # then http://localhost:5679
+#
+# A blanket `reverse_proxy` to n8n here would undo that, which is why this
+# file whitelists paths rather than proxying the host.
+# =====================================================================
+
+{
+	email {$ACME_EMAIL}
+	# Uncomment to rehearse against Let's Encrypt's staging CA. Do this while
+	# testing DNS: the production CA rate-limits ~5 failures per account per
+	# hour, and burning that budget locks out the real certificate.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$ACQ_DOMAIN} {
+	encode gzip
+
+	# Access log, so a spike in unsubscribe hits is visible. Mail providers
+	# probe links; without this you cannot tell a scanner from a real person.
+	log {
+		output file /data/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+
+	# --- the public surface, and all of it ---------------------------
+	@webhooks path /webhook/* /webhook-waiting/*
+	handle @webhooks {
+		reverse_proxy n8n-acq:5678 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# --- everything else --------------------------------------------
+	# 404, not 403: a 403 confirms something is there. This server should look
+	# like it hosts one endpoint, because it does.
+	handle {
+		respond "Not Found" 404
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+}

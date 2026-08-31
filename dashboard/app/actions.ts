@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { pool } from "@/lib/db";
+import { requireUserForAction } from "@/lib/auth";
 
 /**
  * Approve a drafted email.
@@ -12,7 +13,11 @@ import { pool } from "@/lib/db";
  * ramp and suppression all still apply. Approving is permission to send, not
  * an instruction to bypass the limits.
  */
-export async function approveDraft(approvalId: string, decidedBy = "dashboard") {
+export async function approveDraft(approvalId: string) {
+  // Every action re-checks. A Server Action is its own POST endpoint, so
+  // middleware having run for the page is not evidence that it ran for this.
+  const { email: decidedBy } = await requireUserForAction();
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -60,7 +65,9 @@ export async function approveDraft(approvalId: string, decidedBy = "dashboard") 
 }
 
 /** Reject a draft. The email is cancelled; the lead stays for a later attempt. */
-export async function rejectDraft(approvalId: string, decidedBy = "dashboard") {
+export async function rejectDraft(approvalId: string) {
+  const { email: decidedBy } = await requireUserForAction();
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -99,10 +106,12 @@ export async function rejectDraft(approvalId: string, decidedBy = "dashboard") {
 
 /** Never contact this clinic again. transition_lead() then blocks every path back. */
 export async function markDoNotContact(leadId: string) {
+  const { email } = await requireUserForAction();
+
   await pool.query(`UPDATE acq.leads SET do_not_contact = true WHERE id = $1::uuid`, [leadId]);
-  await pool.query(`SELECT acq.stop_follow_ups($1::uuid, 'marked do_not_contact in dashboard')`, [
-    leadId,
-  ]);
+  await pool.query(`SELECT acq.stop_follow_ups($1::uuid, $2)`,
+    [leadId, `marked do_not_contact in dashboard by ${email}`],
+  );
   revalidatePath("/");
   return { ok: true as const };
 }
