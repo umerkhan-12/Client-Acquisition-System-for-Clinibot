@@ -27,8 +27,11 @@ services:
       # Loopback only. n8n's sole authentication is an owner account created
       # on first visit, so between `up` and that visit an exposed instance is
       # an unauthenticated console. Reach the UI over an SSH tunnel:
-      #   ssh -L 5678:127.0.0.1:5678 <host>
-      - "127.0.0.1:5678:5678"
+      #   ssh -L 5679:127.0.0.1:5679 <host>
+      #
+      # The host port is a variable because co-locating beside Clinibot's n8n
+      # means 5678 is already taken — set N8N_HOST_PORT=5679 there.
+      - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
 
     # A ceiling, so a runaway execution restarts one container instead of
     # letting the OOM killer choose a victim on a small box. 700m suits 1 GB;
@@ -40,16 +43,18 @@ services:
       # Lose it and every stored credential is permanently unreadable.
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
       N8N_HOST: ${N8N_HOST:?set N8N_HOST in .env}
-      N8N_PROTOCOL: https
+      # https behind Caddy; http when reached only through an SSH tunnel.
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-https}
       # Every unsubscribe link in every email is built from this.
       WEBHOOK_URL: ${WEBHOOK_URL:?set WEBHOOK_URL in .env}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Asia/Karachi}
       TZ: ${GENERIC_TIMEZONE:-Asia/Karachi}
 
-      # Behind Caddy. Without the first, the login cookie is dropped and
-      # sign-in silently fails to persist.
-      N8N_SECURE_COOKIE: "true"
-      N8N_PROXY_HOPS: "1"
+      # Behind Caddy both are right. Over a plain-HTTP SSH tunnel the cookie
+      # MUST be false, or n8n drops the login cookie and sign-in silently
+      # fails to persist — you log in, and land back on the login page.
+      N8N_SECURE_COOKIE: "${N8N_SECURE_COOKIE:-true}"
+      N8N_PROXY_HOPS: "${N8N_PROXY_HOPS:-1}"
       N8N_PUBLIC_API_DISABLED: "true"
 
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
@@ -97,6 +102,10 @@ services:
     image: caddy:2-alpine
     container_name: caddy-acq
     restart: unless-stopped
+    # Opt-in: `--profile tls`. A host that already terminates TLS (nginx on
+    # the Clinibot droplet) would lose the port-80 bind, and Caddy needs a
+    # real domain in N8N_HOST before it can get a certificate at all.
+    profiles: ["tls"]
     depends_on: [n8n]
     ports:
       - "80:80"
