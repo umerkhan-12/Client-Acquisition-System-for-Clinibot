@@ -1,0 +1,1020 @@
+<title>The Last Frame</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;0,6..96,500;0,6..96,700;1,6..96,400&family=Archivo:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --ground:#08090C;
+    --panel:#0E1117;
+    --panel-2:#12161E;
+    --line:rgba(232,227,217,.10);
+    --line-strong:rgba(232,227,217,.22);
+    --ink:#E8E3D9;
+    --ink-dim:#A8A79F;
+    --steel:#78828F;
+    --red:#A8202F;
+    --red-deep:#6E1520;
+    --gold:#C9A227;
+    --emerald:#2A6B58;
+    --navy:#1B2740;
+    --cream:#EDE6D8;
+
+    --f-display:"Bodoni Moda",Georgia,"Times New Roman",serif;
+    --f-body:"Archivo","Helvetica Neue",Arial,sans-serif;
+    --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+
+    --gap:18px;
+    --pad:22px;
+  }
+
+  *{box-sizing:border-box;}
+
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:var(--f-body);
+    font-weight:300;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .board{
+    max-width:1460px;
+    margin:0 auto;
+    padding:34px 24px 90px;
+    display:flex;
+    flex-direction:column;
+    gap:34px;
+  }
+
+  /* ---------- shared type ---------- */
+  .eyebrow{
+    font-family:var(--f-mono);
+    font-size:10.5px;
+    letter-spacing:.20em;
+    text-transform:uppercase;
+    color:var(--gold);
+    margin:0;
+  }
+  .eyebrow.steel{color:var(--steel);}
+  h2{
+    font-family:var(--f-display);
+    font-weight:400;
+    font-size:clamp(21px,2.2vw,27px);
+    letter-spacing:.01em;
+    margin:6px 0 0;
+    text-wrap:balance;
+  }
+  h3{
+    font-family:var(--f-display);
+    font-weight:500;
+    font-size:16px;
+    margin:0;
+    letter-spacing:.01em;
+  }
+  p{margin:0;}
+  .lede{color:var(--ink-dim);font-size:13.5px;max-width:62ch;}
+  .mono{font-family:var(--f-mono);}
+  .num{font-variant-numeric:tabular-nums;}
+
+  /* ---------- section shell ---------- */
+  section{
+    border-top:1px solid var(--line-strong);
+    padding-top:20px;
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+  }
+  .sec-head{display:flex;flex-direction:column;gap:2px;}
+  .sec-head .lede{margin-top:8px;}
+
+  /* ---------- slate / masthead ---------- */
+  .slate{
+    border:1px solid var(--line-strong);
+    background:
+      radial-gradient(120% 160% at 8% 0%, rgba(168,32,47,.16) 0%, rgba(8,9,12,0) 58%),
+      radial-gradient(90% 140% at 96% 100%, rgba(201,162,39,.12) 0%, rgba(8,9,12,0) 60%),
+      var(--panel);
+  }
+  .slate-strip{
+    display:flex;
+    height:14px;
+    border-bottom:1px solid var(--line);
+  }
+  .slate-strip span{flex:1;}
+  .slate-body{padding:30px var(--pad) 24px;}
+  .slate h1{
+    font-family:var(--f-display);
+    font-weight:700;
+    font-size:clamp(40px,7.6vw,92px);
+    line-height:.92;
+    letter-spacing:-.015em;
+    margin:12px 0 0;
+    text-wrap:balance;
+  }
+  .slate h1 em{
+    font-style:italic;
+    font-weight:400;
+    color:var(--gold);
+  }
+  .slate .billing{
+    font-family:var(--f-display);
+    font-style:italic;
+    font-size:clamp(17px,2.4vw,25px);
+    color:var(--cream);
+    margin-top:14px;
+  }
+  .slate .billing b{font-style:normal;font-weight:500;letter-spacing:.02em;}
+  .rule-gold{height:1px;background:linear-gradient(90deg,var(--gold),rgba(201,162,39,.05));margin:22px 0 18px;}
+
+  .meta{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+    gap:14px 20px;
+  }
+  .meta div{display:flex;flex-direction:column;gap:3px;}
+  .meta dt,.meta .k{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--steel);
+  }
+  .meta .v{font-size:13.5px;color:var(--ink);font-weight:400;}
+
+  /* ---------- top triptych ---------- */
+  .triptych{
+    display:grid;
+    grid-template-columns:repeat(12,1fr);
+    gap:var(--gap);
+    align-items:start;
+  }
+  .col-4{grid-column:span 4;}
+  .col-6{grid-column:span 6;}
+  .col-8{grid-column:span 8;}
+  .col-12{grid-column:span 12;}
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:var(--pad);
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+  }
+
+  /* ---------- composition frames (reference slots) ---------- */
+  .frame{
+    position:relative;
+    border:1px solid var(--line-strong);
+    background:linear-gradient(160deg,#1a1d26 0%,#0b0d12 100%);
+    overflow:hidden;
+  }
+  .frame.r43{aspect-ratio:4/3;}
+  .frame.r34{aspect-ratio:3/4;}
+  .frame.r169{aspect-ratio:16/9;}
+  .frame.r239{aspect-ratio:2.39/1;}
+  .frame::before{
+    content:"";position:absolute;inset:0;
+    background:
+      linear-gradient(to right,transparent 33.2%,rgba(232,227,217,.13) 33.2%,rgba(232,227,217,.13) 33.5%,transparent 33.5%,transparent 66.4%,rgba(232,227,217,.13) 66.4%,rgba(232,227,217,.13) 66.7%,transparent 66.7%),
+      linear-gradient(to bottom,transparent 33.2%,rgba(232,227,217,.13) 33.2%,rgba(232,227,217,.13) 33.5%,transparent 33.5%,transparent 66.4%,rgba(232,227,217,.13) 66.4%,rgba(232,227,217,.13) 66.7%,transparent 66.7%);
+    pointer-events:none;
+  }
+  .frame .safe{
+    position:absolute;inset:9%;
+    border:1px dashed rgba(232,227,217,.14);
+    pointer-events:none;
+  }
+  .frame .fno{
+    position:absolute;top:8px;left:9px;
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;
+    color:rgba(232,227,217,.62);
+  }
+  .frame .ftag{
+    position:absolute;top:8px;right:9px;
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;
+    color:var(--gold);
+  }
+  .frame .fname{
+    position:absolute;left:9px;right:9px;bottom:26px;
+    font-family:var(--f-display);font-size:15px;line-height:1.2;
+    color:var(--cream);
+  }
+  .frame .fspec{
+    position:absolute;left:9px;right:9px;bottom:8px;
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.08em;
+    color:rgba(232,227,217,.55);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  /* tinted grounds per sequence */
+  .t-event{background:linear-gradient(155deg,#231a12 0%,#0a0a0d 78%);}
+  .t-dark{background:linear-gradient(155deg,#151a24 0%,#07080b 78%);}
+  .t-resort{background:linear-gradient(155deg,#2b2a1c 0%,#10231f 55%,#080b0c 100%);}
+  .t-romance{background:linear-gradient(155deg,#2a1518 0%,#1a1113 55%,#08090c 100%);}
+  .t-night{background:linear-gradient(155deg,#1e1a22 0%,#0a0a0e 78%);}
+  .t-action{background:linear-gradient(155deg,#1a1e22 0%,#08090b 78%);}
+
+  .slot-note{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.06em;
+    color:var(--steel);margin-top:7px;line-height:1.5;
+  }
+
+  /* ---------- character ---------- */
+  .traits{display:flex;flex-wrap:wrap;gap:6px;}
+  .trait{
+    font-family:var(--f-mono);font-size:10px;letter-spacing:.10em;text-transform:uppercase;
+    border:1px solid var(--line-strong);padding:4px 8px;color:var(--ink-dim);
+  }
+  .arc{display:flex;flex-direction:column;gap:0;}
+  .arc-step{
+    display:grid;grid-template-columns:26px 1fr;gap:12px;align-items:baseline;
+    padding:9px 0;border-bottom:1px solid var(--line);
+  }
+  .arc-step:last-child{border-bottom:0;}
+  .arc-step .i{font-family:var(--f-mono);font-size:10px;color:var(--gold);}
+  .arc-step .t{font-family:var(--f-display);font-size:15px;}
+  .arc-step .d{font-size:12.5px;color:var(--steel);grid-column:2;margin-top:2px;}
+
+  .profile-row{
+    display:grid;grid-template-columns:auto 1fr;gap:10px 16px;
+    font-size:13px;
+  }
+  .profile-row .k{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--steel);padding-top:3px;
+  }
+
+  /* ---------- story journey (timecode ladder) ---------- */
+  .ladder{display:flex;flex-direction:column;}
+  .beat{
+    display:grid;
+    grid-template-columns:74px 1fr;
+    gap:14px;
+    padding:10px 0;
+    border-bottom:1px solid var(--line);
+    position:relative;
+  }
+  .beat:last-child{border-bottom:0;}
+  .beat .tc{
+    font-family:var(--f-mono);font-size:11px;letter-spacing:.04em;
+    color:var(--steel);padding-top:2px;
+  }
+  .beat.live .tc{color:var(--red);}
+  .beat.zero .tc{color:var(--gold);}
+  .beat .h{font-family:var(--f-display);font-size:15.5px;line-height:1.25;}
+  .beat .s{font-size:12.5px;color:var(--steel);margin-top:2px;}
+  .beat .look{
+    font-family:var(--f-mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--gold);margin-top:4px;
+  }
+
+  /* ---------- relationship ---------- */
+  .rel-step{
+    padding:12px 0;border-bottom:1px solid var(--line);
+    display:flex;flex-direction:column;gap:6px;
+  }
+  .rel-step:last-child{border-bottom:0;}
+  .rel-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+  .rel-top .n{font-family:var(--f-display);font-size:15px;}
+  .rel-top .p{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;color:var(--steel);}
+  .meter{height:3px;background:rgba(232,227,217,.09);position:relative;}
+  .meter i{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,var(--red-deep),var(--red));}
+  .rel-step .d{font-size:12.5px;color:var(--steel);}
+
+  /* ---------- wardrobe ---------- */
+  .wardrobe{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(232px,1fr));
+    gap:var(--gap);
+  }
+  .look{
+    border:1px solid var(--line);
+    background:var(--panel);
+    padding:16px;
+    display:flex;flex-direction:column;gap:11px;
+  }
+  .look-no{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.18em;color:var(--gold);}
+  .swatches{display:flex;height:26px;border:1px solid var(--line);}
+  .swatches span{flex:1;}
+  .look ul{margin:0;padding-left:15px;font-size:12.5px;color:var(--steel);line-height:1.65;}
+  .look .scene{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.10em;text-transform:uppercase;
+    color:var(--ink-dim);border-top:1px solid var(--line);padding-top:9px;margin-top:auto;
+  }
+
+  /* ---------- scene cards ---------- */
+  .scenes{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+    gap:var(--gap);
+  }
+  .scene-card{
+    border:1px solid var(--line);
+    background:var(--panel);
+    display:flex;flex-direction:column;
+  }
+  .scene-card .body{padding:15px;display:flex;flex-direction:column;gap:8px;}
+  .scene-card .sid{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.18em;color:var(--gold);}
+  .scene-card p{font-size:12.5px;color:var(--steel);}
+  .shotlist{
+    list-style:none;margin:0;padding:0;
+    display:flex;flex-direction:column;gap:3px;
+    font-family:var(--f-mono);font-size:10px;letter-spacing:.03em;color:var(--ink-dim);
+  }
+  .shotlist li::before{content:"— ";color:var(--steel);}
+
+  /* ---------- reference grids ---------- */
+  .refgrid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(214px,1fr));
+    gap:var(--gap);
+  }
+  .guard{
+    border-left:2px solid var(--red);
+    background:var(--panel-2);
+    padding:16px 18px;
+    display:flex;flex-direction:column;gap:9px;
+  }
+  .guard h3{color:var(--cream);}
+  .guard ul{margin:0;padding-left:16px;font-size:12.5px;color:var(--ink-dim);line-height:1.7;}
+  .guard .stamp{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--red);
+  }
+
+  /* ---------- lists (locations / props) ---------- */
+  .stack{display:flex;flex-direction:column;}
+  .row{
+    display:grid;grid-template-columns:30px 1fr auto;gap:12px;align-items:baseline;
+    padding:8px 0;border-bottom:1px solid var(--line);
+  }
+  .row:last-child{border-bottom:0;}
+  .row .i{font-family:var(--f-mono);font-size:9.5px;color:var(--steel);}
+  .row .n{font-size:13px;}
+  .row .tag{
+    font-family:var(--f-mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--gold);
+    text-align:right;
+  }
+  .row .tag.cool{color:var(--steel);}
+
+  /* ---------- palette ---------- */
+  .palette{display:flex;flex-direction:column;}
+  .pal{
+    display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:center;
+    padding:9px 0;border-bottom:1px solid var(--line);
+  }
+  .pal:last-child{border-bottom:0;}
+  .chip{width:34px;height:22px;border:1px solid var(--line-strong);}
+  .pal .n{font-size:13px;}
+  .pal .n small{display:block;color:var(--steel);font-size:11.5px;}
+  .pal .hex{font-family:var(--f-mono);font-size:10.5px;color:var(--steel);}
+
+  .camera{display:flex;flex-direction:column;gap:14px;}
+  .cam-group .t{
+    font-family:var(--f-mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--gold);
+    margin-bottom:5px;
+  }
+  .cam-group ul{margin:0;padding-left:15px;font-size:12.5px;color:var(--steel);line-height:1.6;}
+
+  /* ---------- schedule ---------- */
+  .sched{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:var(--gap);
+  }
+  .day{border:1px solid var(--line);background:var(--panel);padding:18px;display:flex;flex-direction:column;gap:12px;}
+  .day .dno{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.18em;color:var(--gold);}
+  .day table{border-collapse:collapse;width:100%;font-size:12.5px;}
+  .day td{padding:6px 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--steel);}
+  .day tr:last-child td{border-bottom:0;}
+  .day td:first-child{
+    font-family:var(--f-mono);font-size:10px;color:var(--ink-dim);width:62px;white-space:nowrap;
+  }
+  .day .closed{
+    font-family:var(--f-mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--red);border:1px solid rgba(168,32,47,.4);padding:3px 7px;align-self:flex-start;
+  }
+
+  .deliver{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;}
+  .deliver div{border-top:1px solid var(--line-strong);padding-top:10px;}
+  .deliver .q{font-family:var(--f-display);font-size:26px;line-height:1;}
+  .deliver .l{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);margin-top:6px;}
+
+  footer{
+    border-top:1px solid var(--line-strong);
+    padding-top:18px;
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    font-family:var(--f-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);
+  }
+  footer .end{color:var(--gold);}
+
+  a{color:var(--gold);}
+  a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--gold);outline-offset:2px;}
+
+  @media (max-width:900px){
+    .col-4,.col-6,.col-8{grid-column:span 12;}
+    .board{padding:24px 16px 64px;gap:28px;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important;transition:none !important;}
+  }
+</style>
+
+<div class="board">
+
+  <!-- ============ MASTHEAD / SLATE ============ -->
+  <header class="slate">
+    <div class="slate-strip" aria-hidden="true">
+      <span style="background:#0B0B0D"></span>
+      <span style="background:#6E1520"></span>
+      <span style="background:#1B2740"></span>
+      <span style="background:#2A6B58"></span>
+      <span style="background:#C9A227"></span>
+      <span style="background:#EDE6D8"></span>
+      <span style="background:#78828F"></span>
+    </div>
+    <div class="slate-body">
+      <p class="eyebrow">Cinematic Game Shoot &nbsp;·&nbsp; Complete Visual Moodboard &nbsp;·&nbsp; 18+ Mystery Thriller</p>
+      <h1>The Last <em>Frame</em></h1>
+      <p class="billing"><b>FATIMA HIRA</b> as <b>AYLA KHAN</b></p>
+      <div class="rule-gold"></div>
+      <div class="meta">
+        <div><span class="k">Format</span><span class="v">Third-person cinematic game</span></div>
+        <div><span class="k">Genre</span><span class="v">Mystery · Suspense · Romance · Action</span></div>
+        <div><span class="k">Production</span><span class="v">Studio + practical locations + 3D environments</span></div>
+        <div><span class="k">Shoot days</span><span class="v num">3</span></div>
+        <div><span class="k">Looks</span><span class="v num">9</span></div>
+        <div><span class="k">Talent fee</span><span class="v num">PKR 400,000 total</span></div>
+        <div><span class="k">Rating</span><span class="v">18+ — no explicit content</span></div>
+        <div><span class="k">Status</span><span class="v">Pitch board — for approval</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ TOP TRIPTYCH ============ -->
+  <div class="triptych">
+
+    <!-- TOP LEFT: CHARACTER -->
+    <div class="col-4 panel">
+      <div>
+        <p class="eyebrow">Top Left · Character</p>
+        <h2>Ayla Khan</h2>
+      </div>
+
+      <div class="frame r34 t-event">
+        <span class="fno">REF · 001</span>
+        <span class="ftag">HERO PORTRAIT</span>
+        <span class="safe"></span>
+        <span class="fname">Ayla — character key art</span>
+        <span class="fspec">85mm · T2.0 · key 45° soft · gold rim · black seamless</span>
+      </div>
+      <p class="slot-note">Reference slot — composition, lens and lighting spec only. Fill from the approved shoot or licensed library.</p>
+
+      <div class="profile-row">
+        <span class="k">Presents</span><span>Late 20s / early 30s</span>
+        <span class="k">Read</span><span>A woman who is never the least-informed person in the room, and never says so.</span>
+        <span class="k">Tell</span><span>Stillness. She stops moving before she speaks.</span>
+        <span class="k">Voice</span><span>Low, unhurried, precise. Volume never rises — pace drops.</span>
+      </div>
+
+      <div class="traits">
+        <span class="trait">Intelligent</span><span class="trait">Confident</span>
+        <span class="trait">Sophisticated</span><span class="trait">Independent</span>
+        <span class="trait">Observant</span><span class="trait">Controlled</span>
+        <span class="trait">Mysterious</span><span class="trait">Determined</span>
+      </div>
+
+      <div>
+        <p class="eyebrow steel">Performance arc — eight registers</p>
+        <div class="arc" style="margin-top:8px">
+          <div class="arc-step"><span class="i">01</span><span class="t">Confidence</span><span class="d">Owns the room without working for it.</span></div>
+          <div class="arc-step"><span class="i">02</span><span class="t">Curiosity</span><span class="d">Interest that hasn't yet admitted it is fear.</span></div>
+          <div class="arc-step"><span class="i">03</span><span class="t">Suspicion</span><span class="d">Watching people the way she watches footage.</span></div>
+          <div class="arc-step"><span class="i">04</span><span class="t">Trust</span><span class="d">The rarest note. Costs her something to play.</span></div>
+          <div class="arc-step"><span class="i">05</span><span class="t">Betrayal</span><span class="d">Shock held behind the face, not on it.</span></div>
+          <div class="arc-step"><span class="i">06</span><span class="t">Conflict</span><span class="d">Two readings of one man, neither dismissible.</span></div>
+          <div class="arc-step"><span class="i">07</span><span class="t">Determination</span><span class="d">Stops reacting. Starts setting the terms.</span></div>
+          <div class="arc-step"><span class="i">08</span><span class="t">Empowerment</span><span class="d">The stillness returns — but it is hers now.</span></div>
+        </div>
+      </div>
+
+      <p class="lede">This is a performance role, not a fashion sitting. Face, eyeline, reaction and body language carry the story; wardrobe marks the act, it does not play it.</p>
+    </div>
+
+    <!-- TOP CENTRE: STORY JOURNEY -->
+    <div class="col-4 panel">
+      <div>
+        <p class="eyebrow">Top Centre · Story Journey</p>
+        <h2>Fifteen beats on a 72-hour clock</h2>
+        <p class="lede" style="margin-top:8px">The countdown is the spine. Every beat is stamped with time remaining — the audience should always know how much of it is left.</p>
+      </div>
+      <div class="ladder">
+        <div class="beat"><span class="tc">— : — : —</span><div><div class="h">Arrival</div><div class="s">Exclusive event. Ayla at full altitude, entirely in control.</div><div class="look">Look 01</div></div></div>
+        <div class="beat"><span class="tc">— : — : —</span><div><div class="h">The room reads her</div><div class="s">Someone is watching. The audience sees it; she does not.</div><div class="look">Look 01</div></div></div>
+        <div class="beat live"><span class="tc num">72:00:00</span><div><div class="h">The message</div><div class="s">Home, alone. An anonymous video lands on her phone.</div><div class="look">Look 01 → 02</div></div></div>
+        <div class="beat live"><span class="tc num">71:12:00</span><div><div class="h">Footage she can't place</div><div class="s">Her, unmistakably. A room she doesn't remember.</div><div class="look">Look 02</div></div></div>
+        <div class="beat live"><span class="tc num">68:40:00</span><div><div class="h">Seventy-two hours</div><div class="s">The sender names the deadline. Nothing else.</div><div class="look">Look 02</div></div></div>
+        <div class="beat live"><span class="tc num">63:05:00</span><div><div class="h">First search</div><div class="s">Photographs, drives, her own recordings. Method, not panic.</div><div class="look">Look 03</div></div></div>
+        <div class="beat live"><span class="tc num">58:20:00</span><div><div class="h">The stranger</div><div class="s">He knows too much to be a coincidence and says so first.</div><div class="look">Look 02</div></div></div>
+        <div class="beat live"><span class="tc num">54:00:00</span><div><div class="h">Refusal, then necessity</div><div class="s">She turns him down. Then the next clue needs two people.</div><div class="look">Look 02</div></div></div>
+        <div class="beat live"><span class="tc num">47:35:00</span><div><div class="h">Working the evidence</div><div class="s">Files, maps, timelines. The first ease between them.</div><div class="look">Look 03</div></div></div>
+        <div class="beat live"><span class="tc num">39:10:00</span><div><div class="h">The resort clue</div><div class="s">Daylight, luxury, and the certainty of being watched.</div><div class="look">Look 05</div></div></div>
+        <div class="beat live"><span class="tc num">31:45:00</span><div><div class="h">The private hour</div><div class="s">Guard down. The closest the story gets to safety.</div><div class="look">Look 06</div></div></div>
+        <div class="beat live"><span class="tc num">24:20:00</span><div><div class="h">The discrepancy</div><div class="s">A timestamp in his story that cannot be true.</div><div class="look">Look 08</div></div></div>
+        <div class="beat live"><span class="tc num">18:05:00</span><div><div class="h">Confrontation</div><div class="s">Distance opens across the frame. She does not raise her voice.</div><div class="look">Look 03</div></div></div>
+        <div class="beat live"><span class="tc num">09:30:00</span><div><div class="h">The surveillance room</div><div class="s">Her whole life on screens — including the parts she lost.</div><div class="look">Look 07</div></div></div>
+        <div class="beat zero"><span class="tc num">00:00:00</span><div><div class="h">Countertrap · FRAME 02 READY</div><div class="s">She stops running, sets the trap, and finds a recording made before any of it began.</div><div class="look">Look 09</div></div></div>
+      </div>
+    </div>
+
+    <!-- TOP RIGHT: RELATIONSHIP -->
+    <div class="col-4 panel">
+      <div>
+        <p class="eyebrow">Top Right · Relationship Journey</p>
+        <h2>Five stages with the male lead</h2>
+        <p class="lede" style="margin-top:8px">The bar is proximity — how much distance she allows. It closes over four stages and reopens in one cut.</p>
+      </div>
+
+      <div>
+        <div class="rel-step">
+          <div class="rel-top"><span class="n">Suspicion</span><span class="p mono">Distance 100%</span></div>
+          <div class="meter"><i style="width:8%"></i></div>
+          <div class="d">Two-shots with air between them. She keeps exits in frame.</div>
+        </div>
+        <div class="rel-step">
+          <div class="rel-top"><span class="n">Utility</span><span class="p mono">Distance 70%</span></div>
+          <div class="meter"><i style="width:30%"></i></div>
+          <div class="d">Shared table, shared evidence. Hands near, never touching.</div>
+        </div>
+        <div class="rel-step">
+          <div class="rel-top"><span class="n">Trust</span><span class="p mono">Distance 40%</span></div>
+          <div class="meter"><i style="width:60%"></i></div>
+          <div class="d">Singles start matching. She looks at him when he isn't looking.</div>
+        </div>
+        <div class="rel-step">
+          <div class="rel-top"><span class="n">Proximity</span><span class="p mono">Distance 10%</span></div>
+          <div class="meter"><i style="width:92%"></i></div>
+          <div class="d">Foreheads close, hand to face, a held embrace. Near-kiss framing — the kiss never lands.</div>
+        </div>
+        <div class="rel-step">
+          <div class="rel-top"><span class="n">Rupture</span><span class="p mono">Distance 100%</span></div>
+          <div class="meter"><i style="width:5%"></i></div>
+          <div class="d">Back to the widest lens in the film. The room does the acting.</div>
+        </div>
+      </div>
+
+      <div class="frame r43 t-romance">
+        <span class="fno">REF · 002</span>
+        <span class="ftag">PROXIMITY</span>
+        <span class="safe"></span>
+        <span class="fname">Two-shot — the last inch</span>
+        <span class="fspec">50mm · T1.4 · practical lamp key · both eyelines held</span>
+      </div>
+
+      <div class="guard">
+        <span class="stamp">Standing direction</span>
+        <h3>Tension, not contact</h3>
+        <ul>
+          <li>No kiss anywhere in the piece.</li>
+          <li>No bed scenes, in any look, including nightwear.</li>
+          <li>Intimacy is built from eyeline, proximity, breath, hands and the cut — never from removal of clothing.</li>
+          <li>Every intimate setup is blocked and agreed with both performers before the camera rolls.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ WARDROBE ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Middle · Wardrobe Progression</p>
+      <h2>Nine looks, in story order</h2>
+      <p class="lede">The journey runs elegant → casual → investigation → nightlife → resort → nightwear → action → vulnerable → empowered. Colour desaturates as the story tightens, then hardens into steel for the final act.</p>
+    </div>
+
+    <div class="wardrobe">
+      <div class="look">
+        <span class="look-no">LOOK 01</span>
+        <h3>Elegant &amp; Sophisticated</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#0B0B0D"></span><span style="background:#6E1520"></span><span style="background:#C9A227"></span><span style="background:#D8C9A8"></span></div>
+        <ul><li>Floor-length evening gown — black, champagne or burgundy</li><li>Fine jewellery, structured clutch</li><li>Polished chignon, glamorous makeup</li></ul>
+        <span class="scene">Scene 01 · Luxury introduction</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 02</span>
+        <h3>Casual &amp; Everyday</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#2C3542"></span><span style="background:#EDE6D8"></span><span style="background:#8A7256"></span><span style="background:#1B2740"></span></div>
+        <ul><li>Tailored trousers or clean denim, fitted top</li><li>Unstructured blazer, low boot or loafer</li><li>Hair down, minimal makeup</li></ul>
+        <span class="scene">Scenes 02–03 · Video · Meeting the lead</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 03</span>
+        <h3>Investigation / Dark</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#0B0B0D"></span><span style="background:#33383F"></span><span style="background:#4A1218"></span><span style="background:#78828F"></span></div>
+        <ul><li>Black trousers, fitted top, leather or technical jacket</li><li>Flat boots — she has to be able to run in them</li><li>Darker eye, hair tied back and off the face</li></ul>
+        <span class="scene">Scenes 04 &amp; 06 · Investigation · Betrayal</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 04</span>
+        <h3>Glamorous Night Out</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#1B4A3E"></span><span style="background:#C9A227"></span><span style="background:#0B0B0D"></span><span style="background:#8E1F2B"></span></div>
+        <ul><li>High-fashion evening dress — emerald or deep jewel tone</li><li>Statement earring, hard-heel silhouette</li><li>Strong evening makeup, sculpted hair</li></ul>
+        <span class="scene">Scene 05 · Building trust</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 05</span>
+        <h3>Resort / Swimwear</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#D8C9A8"></span><span style="background:#EDE6D8"></span><span style="background:#C9A227"></span><span style="background:#2A6B58"></span></div>
+        <ul><li>Approved swimwear per the signed wardrobe rider</li><li>Flowing cover-up or robe available on every setup</li><li>Sunglasses, sandals, loose natural hair</li></ul>
+        <span class="scene">Resort sequence · Watched in daylight</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 06</span>
+        <h3>Nightwear</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#E4DCD2"></span><span style="background:#C7A9A4"></span><span style="background:#2B2733"></span><span style="background:#C9A227"></span></div>
+        <ul><li>Tasteful satin or silk nightwear, agreed pre-production</li><li>Robe available and worn between takes</li><li>Soft natural makeup, hair undressed</li></ul>
+        <span class="scene">Private interior · Reflection scene</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 07</span>
+        <h3>Action / Final Act</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#0B0B0D"></span><span style="background:#4C545E"></span><span style="background:#78828F"></span><span style="background:#1B2740"></span></div>
+        <ul><li>Dark fitted trousers, top, jacket, boots</li><li>Nothing loose — the silhouette has to read at a run</li><li>Sleek hair, defined eye, no jewellery</li></ul>
+        <span class="scene">Scene 07 · Escape &amp; confrontation</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 08</span>
+        <h3>Emotional / Vulnerable</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#EDE6D8"></span><span style="background:#D6CDBE"></span><span style="background:#B9AE9C"></span><span style="background:#8A8377"></span></div>
+        <ul><li>Soft neutral knit or shirt, no structure</li><li>No jewellery, no armour</li><li>Natural makeup, hair as it falls</li></ul>
+        <span class="scene">Discrepancy · Memory reveal</span>
+      </div>
+
+      <div class="look">
+        <span class="look-no">LOOK 09</span>
+        <h3>Powerful / Empowered</h3>
+        <div class="swatches" aria-hidden="true"><span style="background:#23262B"></span><span style="background:#EDE6D8"></span><span style="background:#0B0B0D"></span><span style="background:#C9A227"></span></div>
+        <ul><li>Sharp tailored suit, ivory shell beneath</li><li>Hard shoulder line — the transformation is structural</li><li>Sleek hair, strong defined eye</li></ul>
+        <span class="scene">Final frame · FRAME 02 READY</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ KEY SCENES ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Middle / Lower · Key Story Scenes</p>
+      <h2>Eleven sequences and what each one has to deliver</h2>
+    </div>
+
+    <div class="scenes">
+      <div class="scene-card">
+        <div class="frame r169 t-event"><span class="fno">SC 01</span><span class="ftag">GLAMOUR</span><span class="safe"></span><span class="fname">Luxury introduction</span><span class="fspec">35mm · slow dolly-in · gold practicals</span></div>
+        <div class="body">
+          <span class="sid">SCENE 01</span>
+          <p>Ayla arrives at an exclusive event, entirely in command. Establish the altitude she is going to fall from.</p>
+          <ul class="shotlist"><li>Tracking walk through the venue</li><li>Wide establishing, room reacting</li><li>Close on eyes, scanning</li><li>Jewellery and detail inserts</li><li>Hero portrait</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-night"><span class="fno">SC 02</span><span class="ftag">INCITING</span><span class="safe"></span><span class="fname">The mysterious video</span><span class="fspec">50mm · locked off · screen-light key</span></div>
+        <div class="body">
+          <span class="sid">SCENE 02</span>
+          <p>Home, gown half-undone, phone in hand. She watches something she has no memory of recording — and watches it again.</p>
+          <ul class="shotlist"><li>Seated single with phone</li><li>Phone screen insert</li><li>Face lit only by the screen</li><li>Replay — the second watch is the performance</li><li>Suspicion settling in</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-dark"><span class="fno">SC 03</span><span class="ftag">CHEMISTRY</span><span class="safe"></span><span class="fname">Meeting the male lead</span><span class="fspec">40mm · walking two-shot · overcast daylight</span></div>
+        <div class="body">
+          <span class="sid">SCENE 03</span>
+          <p>He offers help she hasn't asked for. Establish chemistry and refusal in the same conversation.</p>
+          <ul class="shotlist"><li>Walking two-shot, air between them</li><li>Matched singles, unmatched eyelines</li><li>Evidence passed hand to hand</li><li>Her exit — she leaves first</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-dark"><span class="fno">SC 04</span><span class="ftag">PROCEDURE</span><span class="safe"></span><span class="fname">Investigation</span><span class="fspec">28mm handheld · hard sources · deep shadow</span></div>
+        <div class="body">
+          <span class="sid">SCENE 04</span>
+          <p>Method under pressure. She is good at this — that is the point of the sequence.</p>
+          <ul class="shotlist"><li>Searching rooms, drawers, files</li><li>Photographs laid out and re-ordered</li><li>Laptop and phone screen inserts</li><li>Walking dark corridors</li><li>Over-shoulder, something behind her</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-romance"><span class="fno">SC 05</span><span class="ftag">TRUST</span><span class="safe"></span><span class="fname">Building trust</span><span class="fspec">85mm · T1.4 · warm practicals · shallow</span></div>
+        <div class="body">
+          <span class="sid">SCENE 05</span>
+          <p>Glamorous evening. Quiet conversation. The first time she stops watching him and simply looks.</p>
+          <ul class="shotlist"><li>Seated close, matched singles</li><li>Held eye contact, no dialogue</li><li>Hands near, then touching</li><li>Gentle embrace</li><li>Near-kiss framing — no kiss</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-resort"><span class="fno">SC 06</span><span class="ftag">SURVEILLED</span><span class="safe"></span><span class="fname">Resort / pool</span><span class="fspec">35mm &amp; 135mm · long lens from across water</span></div>
+        <div class="body">
+          <span class="sid">RESORT</span>
+          <p>Glamour that curdles. She is following a clue; the long lens tells the audience she is also being followed.</p>
+          <ul class="shotlist"><li>Wide, environment dominant</li><li>Long-lens coverage through foreground foliage</li><li>Reflection in water and glass</li><li>Her eyeline catching something off-frame</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-night"><span class="fno">SC 07</span><span class="ftag">INTERIOR</span><span class="safe"></span><span class="fname">Private moment</span><span class="fspec">50mm · lamp + city spill · soft shadow</span></div>
+        <div class="body">
+          <span class="sid">NIGHTWEAR</span>
+          <p>Luxury apartment after an intense day. Emotional vulnerability, not physical exposure. No bed in any frame.</p>
+          <ul class="shotlist"><li>Walking the apartment, phone in hand</li><li>Seated at the window, city below</li><li>Mirror single</li><li>He enters — quiet conversation</li><li>Close framing, embrace, no kiss</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-dark"><span class="fno">SC 08</span><span class="ftag">RUPTURE</span><span class="safe"></span><span class="fname">Betrayal</span><span class="fspec">32mm · wide two-shot · cold top light</span></div>
+        <div class="body">
+          <span class="sid">SCENE 06</span>
+          <p>The strongest acting beat in the piece. Shock, hurt and anger all arrive — and all stay behind the face.</p>
+          <ul class="shotlist"><li>Wide two-shot, maximum separation</li><li>Sustained close-up, no cutaway</li><li>The moment she decides not to shout</li><li>Her exit, unhurried</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-action"><span class="fno">SC 09</span><span class="ftag">ACTION</span><span class="safe"></span><span class="fname">Escape</span><span class="fspec">24mm low · dynamic track · sodium vapour</span></div>
+        <div class="body">
+          <span class="sid">SCENE 07</span>
+          <p>Parking garage, stairwells, running. She stops being followed and starts choosing the ground.</p>
+          <ul class="shotlist"><li>Low-angle running track</li><li>Look over the shoulder</li><li>Silhouette against a light source</li><li>Hero stance, garage depth behind</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r169 t-dark"><span class="fno">SC 10</span><span class="ftag">REVEAL</span><span class="safe"></span><span class="fname">Surveillance room</span><span class="fspec">40mm · screen array key · slow push</span></div>
+        <div class="body">
+          <span class="sid">REVEAL</span>
+          <p>Footage from every part of her life, including the parts that were taken from her. Recognition arriving in stages.</p>
+          <ul class="shotlist"><li>Wide — her small against the screen wall</li><li>Screen content inserts</li><li>Slow push to close-up</li><li>Reflection of the screens in her eyes</li></ul>
+        </div>
+      </div>
+
+      <div class="scene-card">
+        <div class="frame r239 t-event"><span class="fno">SC 11</span><span class="ftag">FINAL</span><span class="safe"></span><span class="fname">FRAME 02 READY</span><span class="fspec">75mm · locked · single hard source · cut to black</span></div>
+        <div class="body">
+          <span class="sid">FINAL FRAME</span>
+          <p>The countertrap is set, the evidence is hers, and one last recording is waiting — made before the story began. Screen reads <span class="mono">FRAME 02 READY</span>. Cut to black.</p>
+          <ul class="shotlist"><li>Confrontation wide</li><li>Hero single, tailored silhouette</li><li>Final insert — the recording</li><li>Held black</li></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RESORT / SWIMWEAR REFERENCE ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Dedicated Section · Resort / Swimwear Visual Reference</p>
+      <h2>Eight setups at the pool — glamour with a watcher in it</h2>
+      <p class="lede">Not a swimwear shoot with a story attached. Ayla is at the resort chasing a clue; the sequence is written so the audience realises, halfway through, that the camera is standing where someone else is standing.</p>
+    </div>
+
+    <div class="guard">
+      <span class="stamp">Wardrobe &amp; consent rider — applies to every setup below</span>
+      <h3>Approved, covered, closed</h3>
+      <ul>
+        <li>Swimwear style, cut and coverage agreed and signed off in pre-production. Nothing is introduced on the day.</li>
+        <li>Cover-up or robe on set for every setup and worn between takes.</li>
+        <li>Closed set: director, DOP, 1st AC, stylist, and the performer's own representative. No stills photographer without prior notice.</li>
+        <li>Framing is full-body, editorial and architectural. No isolated body-part coverage, no low-angle or over-the-shoulder body inserts.</li>
+        <li>Performer holds the right to review and withdraw any frame from the delivered selects.</li>
+        <li>Rated 18+ for theme and tension. Tasteful and glamorous — never explicit.</li>
+      </ul>
+    </div>
+
+    <div class="refgrid">
+      <div>
+        <div class="frame r34 t-resort"><span class="fno">RS · 01</span><span class="ftag">FULL BODY</span><span class="safe"></span><span class="fname">Poolside standing</span><span class="fspec">35mm · T4 · midday sun + bounce · skyline behind</span></div>
+        <p class="slot-note">Confident stance, weight on one hip, infinity edge cutting the frame at the lower third.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-resort"><span class="fno">RS · 02</span><span class="ftag">MOVEMENT</span><span class="safe"></span><span class="fname">Walking beside the pool</span><span class="fspec">50mm · tracking from side · cover-up in motion</span></div>
+        <p class="slot-note">Natural walk, sunglasses on, cover-up catching air. Camera travels with her, never ahead.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-resort"><span class="fno">RS · 03</span><span class="ftag">PORTRAIT</span><span class="safe"></span><span class="fname">Pool-edge portrait</span><span class="fspec">85mm · T2 · warm low sun · water bounce fill</span></div>
+        <p class="slot-note">Seated, elegant posture, direct to lens. The one setup where she looks straight down the barrel.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-resort"><span class="fno">RS · 04</span><span class="ftag">EDITORIAL</span><span class="safe"></span><span class="fname">Resort lounge</span><span class="fspec">40mm · T2.8 · shade + reflected gold</span></div>
+        <p class="slot-note">Relaxed but composed. High-fashion composition — furniture, shade lines and architecture carry half the frame.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-resort"><span class="fno">RS · 05</span><span class="ftag">SUSPENSE</span><span class="safe"></span><span class="fname">Over the shoulder, toward the resort</span><span class="fspec">135mm · T2 · long lens compression · foreground foliage</span></div>
+        <p class="slot-note">The tell. Shot from a distance nobody at the pool would shoot from. Cover-up on.</p>
+      </div>
+      <div>
+        <div class="frame r34 t-resort"><span class="fno">RS · 06</span><span class="ftag">HERO</span><span class="safe"></span><span class="fname">Character hero shot</span><span class="fspec">28mm · T5.6 · full body · architecture symmetric behind</span></div>
+        <p class="slot-note">Premium game-promo composition: strong stance, pool and architecture staged behind her, centred.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-resort"><span class="fno">RS · 07</span><span class="ftag">CLOSE</span><span class="safe"></span><span class="fname">Close portrait</span><span class="fspec">105mm · T2 · sun through hair · face and shoulders only</span></div>
+        <p class="slot-note">Face and shoulders. Sunglasses lifted, hair moving. Sophistication is the entire brief here.</p>
+      </div>
+      <div>
+        <div class="frame r239 t-resort"><span class="fno">RS · 08</span><span class="ftag">ENVIRONMENT</span><span class="safe"></span><span class="fname">Walking away, into the resort</span><span class="fspec">24mm · T8 · wide · silhouette against water</span></div>
+        <p class="slot-note">Environment dominant, figure small. Closes the sequence and hands the scene back to the thriller.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ROMANTIC REFERENCE ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Dedicated Section · Romantic Visual Reference</p>
+      <h2>Intimacy built from distance, not contact</h2>
+      <p class="lede">Everything in this sequence is achieved with lens, eyeline and cut. The performers stay clothed, the bed stays out of frame, and the kiss never happens — the audience should feel it about to, twice, and be denied both times.</p>
+    </div>
+
+    <div class="refgrid">
+      <div>
+        <div class="frame r43 t-romance"><span class="fno">RM · 01</span><span class="ftag">SEATED</span><span class="safe"></span><span class="fname">Sitting close, face to face</span><span class="fspec">40mm · T2 · single lamp key · warm falloff</span></div>
+        <p class="slot-note">Knees angled in, shoulders square. The blocking says trust before either line is spoken.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-romance"><span class="fno">RM · 02</span><span class="ftag">EYES</span><span class="safe"></span><span class="fname">Close-up — held eyeline</span><span class="fspec">100mm · T1.8 · catchlight from window · no cutaway</span></div>
+        <p class="slot-note">Run it long. The performance is in what changes across eight seconds of not looking away.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-romance"><span class="fno">RM · 03</span><span class="ftag">NEAR-KISS</span><span class="safe"></span><span class="fname">Foreheads almost touching</span><span class="fspec">50mm · T1.4 · profile two-shot · rim from city light</span></div>
+        <p class="slot-note">Blocked to an agreed gap and held there. Cut out on the breath, never on contact.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-romance"><span class="fno">RM · 04</span><span class="ftag">HANDS</span><span class="safe"></span><span class="fname">Hand at the side of the face</span><span class="fspec">85mm · T2 · insert · shallow · practical only</span></div>
+        <p class="slot-note">Hands do the work the mouths are not allowed to. Agreed choreography, rehearsed cold.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-romance"><span class="fno">RM · 05</span><span class="ftag">EMBRACE</span><span class="safe"></span><span class="fname">Gentle embrace, shoulder framing</span><span class="fspec">65mm · T2 · shoulder/neck level · back three-quarter</span></div>
+        <p class="slot-note">Framed at the shoulder. Her face is what the audience is watching, not the hold.</p>
+      </div>
+      <div>
+        <div class="frame r43 t-night"><span class="fno">RM · 06</span><span class="ftag">SILENCE</span><span class="safe"></span><span class="fname">Looking at each other, saying nothing</span><span class="fspec">50mm · T2.8 · symmetrical two-shot · lamp + city</span></div>
+        <p class="slot-note">The scene's true climax. No dialogue, no music cue, no movement.</p>
+      </div>
+      <div>
+        <div class="frame r239 t-night"><span class="fno">RM · 07</span><span class="ftag">AFTER</span><span class="safe"></span><span class="fname">Walking together, afterward</span><span class="fspec">32mm · T4 · wide · night exterior · practical wash</span></div>
+        <p class="slot-note">Wide and quiet. The last frame before the discrepancy lands — plant the ease so the rupture costs something.</p>
+      </div>
+      <div>
+        <div class="frame r34 t-night"><span class="fno">RM · 08</span><span class="ftag">MIRROR</span><span class="safe"></span><span class="fname">Alone at the mirror</span><span class="fspec">75mm · T2 · reflection single · nightwear + robe</span></div>
+        <p class="slot-note">Private interior, reflection scene. She is assessing herself the way she assesses evidence.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LOWER TRIPTYCH ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Lower · Locations, Props, Colour</p>
+      <h2>The world, the objects, and the light</h2>
+    </div>
+
+    <div class="triptych">
+      <!-- LOWER LEFT: LOCATIONS -->
+      <div class="col-4 panel">
+        <p class="eyebrow steel">Lower Left · Locations &amp; environments</p>
+        <div class="stack">
+          <div class="row"><span class="i">01</span><span class="n">Luxury apartment</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">02</span><span class="n">Luxury hotel room</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">03</span><span class="n">Hotel lobby</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">04</span><span class="n">Rooftop</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">05</span><span class="n">City at night</span><span class="tag cool">3D / plate</span></div>
+          <div class="row"><span class="i">06</span><span class="n">Luxury resort</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">07</span><span class="n">Infinity pool</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">08</span><span class="n">Restaurant / lounge</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">09</span><span class="n">Parking garage</span><span class="tag">Practical</span></div>
+          <div class="row"><span class="i">10</span><span class="n">Dark investigation interior</span><span class="tag cool">Studio</span></div>
+          <div class="row"><span class="i">11</span><span class="n">Abandoned / secret site</span><span class="tag cool">3D build</span></div>
+          <div class="row"><span class="i">12</span><span class="n">Final confrontation space</span><span class="tag cool">3D build</span></div>
+        </div>
+        <div class="frame r169 t-action"><span class="fno">LOC · 09</span><span class="ftag">SIGNATURE</span><span class="safe"></span><span class="fname">Parking garage — the escape</span><span class="fspec">24mm · sodium vapour · wet floor · long sightline</span></div>
+      </div>
+
+      <!-- LOWER CENTRE: PROPS -->
+      <div class="col-4 panel">
+        <p class="eyebrow steel">Lower Centre · Props &amp; story objects</p>
+        <div class="stack">
+          <div class="row"><span class="i">01</span><span class="n">Smartphone</span><span class="tag">Hero</span></div>
+          <div class="row"><span class="i">02</span><span class="n">Laptop</span><span class="tag">Hero</span></div>
+          <div class="row"><span class="i">03</span><span class="n">USB drive</span><span class="tag">Hero</span></div>
+          <div class="row"><span class="i">04</span><span class="n">Memory card</span><span class="tag cool">Insert</span></div>
+          <div class="row"><span class="i">05</span><span class="n">Photographs</span><span class="tag cool">Insert</span></div>
+          <div class="row"><span class="i">06</span><span class="n">Encrypted files</span><span class="tag cool">Screen</span></div>
+          <div class="row"><span class="i">07</span><span class="n">Documents</span><span class="tag cool">Insert</span></div>
+          <div class="row"><span class="i">08</span><span class="n">Hotel key card</span><span class="tag cool">Insert</span></div>
+          <div class="row"><span class="i">09</span><span class="n">Evidence folder</span><span class="tag cool">Insert</span></div>
+          <div class="row"><span class="i">10</span><span class="n">Vehicle</span><span class="tag">Action</span></div>
+          <div class="row"><span class="i">11</span><span class="n">Surveillance screens</span><span class="tag">Hero</span></div>
+          <div class="row"><span class="i">12</span><span class="n">The mysterious video</span><span class="tag">Hero</span></div>
+          <div class="row"><span class="i">13</span><span class="n">Pendant / memory object</span><span class="tag">Hero</span></div>
+        </div>
+        <p class="lede" style="font-size:12.5px">The pendant is the only object that appears in all three acts. It should be on her in Scene 01, absent during the investigation, and back in her hand in the final frame — the audience never needs it explained.</p>
+        <div class="frame r169 t-dark"><span class="fno">PRP · 13</span><span class="ftag">THROUGHLINE</span><span class="safe"></span><span class="fname">Pendant — macro insert</span><span class="fspec">100mm macro · T5.6 · single hard source · black field</span></div>
+      </div>
+
+      <!-- LOWER RIGHT: COLOUR + CAMERA -->
+      <div class="col-4 panel">
+        <p class="eyebrow steel">Lower Right · Colour script, lighting &amp; camera</p>
+        <div class="palette">
+          <div class="pal"><span class="chip" style="background:#0B0B0D"></span><span class="n">Black<small>Mystery — the default ground</small></span><span class="hex">#0B0B0D</span></div>
+          <div class="pal"><span class="chip" style="background:#8E1F2B"></span><span class="n">Deep red<small>Romance and danger, never separated</small></span><span class="hex">#8E1F2B</span></div>
+          <div class="pal"><span class="chip" style="background:#1B2740"></span><span class="n">Navy<small>Investigation — cold, procedural</small></span><span class="hex">#1B2740</span></div>
+          <div class="pal"><span class="chip" style="background:#2A6B58"></span><span class="n">Emerald<small>Luxury and nightlife</small></span><span class="hex">#2A6B58</span></div>
+          <div class="pal"><span class="chip" style="background:#C9A227"></span><span class="n">Gold<small>Wealth, glamour, the opening act</small></span><span class="hex">#C9A227</span></div>
+          <div class="pal"><span class="chip" style="background:#EDE6D8"></span><span class="n">Cream<small>Emotional scenes — the only warm neutral</small></span><span class="hex">#EDE6D8</span></div>
+          <div class="pal"><span class="chip" style="background:#78828F"></span><span class="n">Steel grey<small>Action and the final act</small></span><span class="hex">#78828F</span></div>
+        </div>
+
+        <div class="camera">
+          <div class="cam-group">
+            <div class="t">Glamour</div>
+            <ul><li>Slow tracking, motivated by her walk</li><li>Wide establishing that lets the venue win</li><li>Full-body character shots</li><li>Centred hero compositions</li></ul>
+          </div>
+          <div class="cam-group">
+            <div class="t">Mystery</div>
+            <ul><li>Close-ups held past comfort</li><li>Reflections — glass, water, screens</li><li>Shadow as a compositional element</li><li>Over-the-shoulder from unmotivated positions</li><li>Handheld, controlled; screen inserts</li></ul>
+          </div>
+          <div class="cam-group">
+            <div class="t">Romance</div>
+            <ul><li>Close facial framing, matched singles</li><li>Held eye contact, minimal cutting</li><li>Shallow depth, warm practical key</li><li>Silhouettes, hands, shoulders</li><li>Near-kiss framing that cuts before contact</li></ul>
+          </div>
+          <div class="cam-group">
+            <div class="t">Action</div>
+            <ul><li>Dynamic tracking on the run</li><li>Low angles for the hero turn</li><li>Wide shots to keep geography legible</li><li>Controlled handheld — never chaotic</li><li>Strong silhouettes against hard sources</li></ul>
+          </div>
+          <div class="cam-group">
+            <div class="t">Makeup &amp; hair continuity</div>
+            <ul><li>Opening — polished hair, glamorous makeup</li><li>Investigation — natural base, darker eye, hair back</li><li>Nightlife — strong evening makeup, sculpted hair</li><li>Resort — glowing skin, loose hair, sunglasses</li><li>Emotional — softest natural, nothing sculpted</li><li>Final act — defined eye, sleek hair, powerful</li></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCHEDULE ============ -->
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Production · Three Shoot Days</p>
+      <h2>How nine looks fit into three days</h2>
+      <p class="lede">Looks are grouped by lighting condition and location move, not by story order. The two closed-set sequences sit together on Day 3, at the end of the schedule, once the working relationship on set is established.</p>
+    </div>
+
+    <div class="sched">
+      <div class="day">
+        <span class="dno">DAY 01 · GLAMOUR &amp; SETUP</span>
+        <h3>Event, lobby, rooftop, apartment</h3>
+        <table>
+          <tr><td>Looks</td><td>01 Elegant · 04 Night out · 02 Casual</td></tr>
+          <tr><td>Scenes</td><td>01 Luxury introduction · 05 Building trust · 03 Meeting the lead</td></tr>
+          <tr><td>Key</td><td>Gold practicals, warm falloff, slow tracking</td></tr>
+          <tr><td>Delivers</td><td>Hero portrait, character key art, act-one coverage</td></tr>
+        </table>
+      </div>
+      <div class="day">
+        <span class="dno">DAY 02 · DARK &amp; ACTION</span>
+        <h3>Garage, dark interiors, confrontation</h3>
+        <table>
+          <tr><td>Looks</td><td>03 Investigation · 07 Action · 09 Empowered</td></tr>
+          <tr><td>Scenes</td><td>04 Investigation · 06 Betrayal · 07 Escape · 10 Surveillance · 11 Final frame</td></tr>
+          <tr><td>Key</td><td>Sodium vapour, hard sources, screen arrays</td></tr>
+          <tr><td>Delivers</td><td>The strongest acting beat, all action coverage, final frame</td></tr>
+        </table>
+      </div>
+      <div class="day">
+        <span class="dno">DAY 03 · RESORT &amp; INTERIOR</span>
+        <h3>Resort, pool, private apartment</h3>
+        <span class="closed">Closed set — both sequences</span>
+        <table>
+          <tr><td>Looks</td><td>05 Resort · 06 Nightwear · 08 Vulnerable</td></tr>
+          <tr><td>Scenes</td><td>Resort sequence (RS 01–08) · Private moment (RM 01–08)</td></tr>
+          <tr><td>Key</td><td>Midday sun and bounce, then lamp and city spill</td></tr>
+          <tr><td>Delivers</td><td>Resort reference set, romantic reference set, memory reveal</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="deliver">
+      <div><div class="q num">3</div><div class="l">Shoot days</div></div>
+      <div><div class="q num">9</div><div class="l">Wardrobe looks</div></div>
+      <div><div class="q num">11</div><div class="l">Key sequences</div></div>
+      <div><div class="q num">15</div><div class="l">Story beats</div></div>
+      <div><div class="q num">16</div><div class="l">Reference setups</div></div>
+      <div><div class="q num">PKR 400,000</div><div class="l">Talent fee, total</div></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>The Last Frame · Fatima Hira as Ayla Khan · Complete visual moodboard</span>
+    <span>Reference slots carry framing and lighting specs, not generated likeness</span>
+    <span class="end">FRAME 02 READY</span>
+  </footer>
+
+</div>
