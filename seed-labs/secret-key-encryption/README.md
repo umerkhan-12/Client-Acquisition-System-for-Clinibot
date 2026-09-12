@@ -3,7 +3,9 @@
 **Lab:** Crypto — Secret-Key Encryption (SEED Labs 2.0, Ubuntu 20.04)  
 **Course:** Information / Computer Security  
 **Institution:** FAST-NUCES Karachi  
-**Submitted by:** ..............................  **Roll no:** ....................  **Date:** ....................
+**Submitted by:** Umer Khan  
+**Roll no:** 23K-0798  
+**Date:** 12 September 2026
 
 ---
 
