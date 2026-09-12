@@ -1,0 +1,15 @@
+plaintext: 1600 bytes
+corrupting one bit of byte 55 (offset 54, inside block 4) of each ciphertext
+
+  byte 54: 0x1b -> 0x13 (flipped mask 0x08)
+  aes-128-ecb       16 bytes wrong (67 bits), bytes 48..63, blocks [3]
+
+  byte 54: 0xad -> 0xa5 (flipped mask 0x08)
+  aes-128-cbc       17 bytes wrong (73 bits), bytes 48..70, blocks [3, 4]
+
+  byte 54: 0x81 -> 0x89 (flipped mask 0x08)
+  aes-128-cfb       17 bytes wrong (70 bits), bytes 54..79, blocks [3, 4]
+
+  byte 54: 0x47 -> 0x4f (flipped mask 0x08)
+  aes-128-ofb        1 bytes wrong (1 bits), bytes 54..54, blocks [3]
+

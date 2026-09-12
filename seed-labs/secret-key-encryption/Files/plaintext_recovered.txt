@@ -1,0 +1,19 @@
+the security of a cipher must never depend on keeping the algorithm itself a
+secret. this principle was stated by auguste kerckhoffs in the nineteenth
+century, and it remains the foundation of modern cryptography. a system should
+stay secure even when everything about it, except the key, is public knowledge.
+substitution ciphers fail this test badly. they hide the identity of each
+letter, but they do not hide the shape of the language underneath. the letter e
+is the most common letter in english text, and it stays the most common letter
+after the substitution is applied. the word the appears more often than any
+other word, and a three letter word that repeats constantly is a very strong
+clue. frequency analysis exploits exactly this leakage. an analyst counts the
+single letters, then the pairs, then the triples, and matches those counts
+against the known statistics of the language. within a few careful guesses the
+mapping begins to collapse, and once a handful of letters are fixed the
+remaining words can be read almost directly. modern block ciphers defeat this
+attack because a single change in the input changes roughly half of the output
+bits, and because the same plaintext block does not always produce the same
+ciphertext block. that last property depends on the mode of operation rather
+than on the cipher itself, which is why choosing a mode carelessly can undo all
+of the strength that the underlying algorithm provides.

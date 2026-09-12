@@ -1,0 +1,9 @@
+same key, same IV   (run1 vs run2): IDENTICAL
+same key, IV+1 bit  (run1 vs run3): different
+
+run1  be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899fd464d2e1dd28626
+run2  be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899fd464d2e1dd28626
+run3  614d8bf57d51e788d22efe8b24498e7b98cd2bf8beaff10f7ad1fd9e7dd88707
+
+Reusing an IV makes encryption deterministic: an eavesdropper learns
+when you sent the same message twice, without breaking AES at all.

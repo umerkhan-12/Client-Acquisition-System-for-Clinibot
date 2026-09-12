@@ -1,0 +1,12 @@
+dictionary: 74341 words shorter than 16 characters
+(no --ciphertext given, running the self-test)
+
+self-test: a key was picked from the dictionary at random
+  plaintext  : This is a top secret.
+  ciphertext : 32cb8a96a1e23c3ddd3e62f8eb433a8266e2cb27ed4a7c645c32e701fbfd4ff1
+  IV         : 00000000000000000000000000000000
+  cracking...
+  key found  : 'petrol' -> b'petrol##########'
+  it was     : 'petrol'
+  153694 keys tried in 1.13s (135,481 keys/sec)
+  RESULT     : PASS

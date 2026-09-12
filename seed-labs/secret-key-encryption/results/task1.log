@@ -1,0 +1,78 @@
+### frequency analysis of the ciphertext (the manual starting point)
+
+=== 1-gram (top 10 of 24 distinct) ===
+   1. c      162  13.73%   english #1: e
+   2. f      142  12.03%   english #2: t
+   3. h       88   7.46%   english #3: a
+   4. k       81   6.86%   english #4: o
+   5. q       81   6.86%   english #5: i
+   6. i       77   6.53%   english #6: n
+   7. o       69   5.85%   english #7: s
+   8. g       68   5.76%   english #8: h
+   9. m       59   5.00%   english #9: r
+  10. u       50   4.24%   english #10: d
+
+=== 2-gram (top 10 of 220 distinct) ===
+   1. fi      53   5.65%   english #1: th
+   2. ic      42   4.48%   english #2: he
+   3. cm      25   2.67%   english #3: in
+   4. kf      20   2.13%   english #4: er
+   5. oq      20   2.13%   english #5: an
+   6. hq      20   2.13%   english #6: re
+   7. fc      17   1.81%   english #7: on
+   8. qa      15   1.60%   english #8: at
+   9. of      14   1.49%   english #9: en
+  10. mc      14   1.49%   english #10: nd
+
+=== 3-gram (top 10 of 412 distinct) ===
+   1. fic     35   4.96%   english #1: the
+   2. oqa      8   1.13%   english #2: and
+   3. fcm      8   1.13%   english #3: ing
+   4. icm      7   0.99%   english #4: her
+   5. hqy      7   0.99%   english #5: hat
+   6. ucf      7   0.99%   english #6: his
+   7. cff      7   0.99%   english #7: tha
+   8. ffc      7   0.99%   english #8: ere
+   9. poj      6   0.85%   english #9: for
+  10. fio      6   0.85%   english #10: ent
+
+ciphertext letters, most common first: cfhkqiogmupyvjraednlzwsx
+english   letters, most common first: etaoinshrdlcumwfgypbvkjxqz
+
+### automatic solve
+ciphertext: 1446 chars, 242 words, 149 distinct
+dictionary: 73201 words
+solved in 0.0s, 150 search nodes, 24/26 letters pinned by the search
+sanity check: 238/242 decrypted words are real English (98.3%)
+
+=== KEY ===
+cipher : abcdefghijklmnopqrstuvwxyz
+plain  : gjemftoahpswrbicnyvzluxqdk
+
+(read it the other way round for the encryption key)
+plain  : abcdefghijklmnopqrstuvwxyz
+cipher : hnpyceaiobzudqgjxmkfvslwrt
+
+=== RECOVERED PLAINTEXT ===
+the security of a cipher must never depend on keeping the algorithm itself a
+secret. this principle was stated by auguste kerckhoffs in the nineteenth
+century, and it remains the foundation of modern cryptography. a system should
+stay secure even when everything about it, except the key, is public knowledge.
+substitution ciphers fail this test badly. they hide the identity of each
+letter, but they do not hide the shape of the language underneath. the letter e
+is the most common letter in english text, and it stays the most common letter
+after the substitution is applied. the word the appears more often than any
+other word, and a three letter word that repeats constantly is a very strong
+clue. frequency analysis exploits exactly this leakage. an analyst counts the
+single letters, then the pairs, then the triples, and matches those counts
+against the known statistics of the language. within a few careful guesses the
+mapping begins to collapse, and once a handful of letters are fixed the
+remaining words can be read almost directly. modern block ciphers defeat this
+attack because a single change in the input changes roughly half of the output
+bits, and because the same plaintext block does not always produce the same
+ciphertext block. that last property depends on the mode of operation rather
+than on the cipher itself, which is why choosing a mode carelessly can undo all
+of the strength that the underlying algorithm provides.
+
+
+written to /home/user/Client-Acquisition-System-for-Clinibot/seed-labs/secret-key-encryption/Files/plaintext_recovered.txt

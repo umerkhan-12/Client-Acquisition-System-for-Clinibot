@@ -1,0 +1,220 @@
+############ TASK 1  frequency analysis ############
+wrote Files/ciphertext.txt (1446 bytes)
+encryption key (plain -> cipher): hnpyceaiobzudqgjxmkfvslwrt
+
+first 200 characters of the ciphertext:
+
+fic kcpvmofr ge h pojicm dvkf qcscm ycjcqy gq zccjoqa fic huagmofid ofkcue h
+kcpmcf. fiok jmoqpojuc lhk kfhfcy nr hvavkfc zcmpzigeek oq fic qoqcfccqfi
+pcqfvmr, hqy of mcdhoqk fic egvqyhfogq ge dgycmq 
+
+=== 1-gram (top 10 of 24 distinct) ===
+   1. c      162  13.73%   english #1: e
+   2. f      142  12.03%   english #2: t
+   3. h       88   7.46%   english #3: a
+   4. k       81   6.86%   english #4: o
+   5. q       81   6.86%   english #5: i
+   6. i       77   6.53%   english #6: n
+   7. o       69   5.85%   english #7: s
+   8. g       68   5.76%   english #8: h
+   9. m       59   5.00%   english #9: r
+  10. u       50   4.24%   english #10: d
+
+=== 2-gram (top 10 of 220 distinct) ===
+   1. fi      53   5.65%   english #1: th
+   2. ic      42   4.48%   english #2: he
+   3. cm      25   2.67%   english #3: in
+   4. kf      20   2.13%   english #4: er
+   5. oq      20   2.13%   english #5: an
+   6. hq      20   2.13%   english #6: re
+   7. fc      17   1.81%   english #7: on
+   8. qa      15   1.60%   english #8: at
+   9. of      14   1.49%   english #9: en
+  10. mc      14   1.49%   english #10: nd
+
+=== 3-gram (top 10 of 412 distinct) ===
+   1. fic     35   4.96%   english #1: the
+   2. oqa      8   1.13%   english #2: and
+   3. fcm      8   1.13%   english #3: ing
+   4. icm      7   0.99%   english #4: her
+   5. hqy      7   0.99%   english #5: hat
+   6. ucf      7   0.99%   english #6: his
+   7. cff      7   0.99%   english #7: tha
+   8. ffc      7   0.99%   english #8: ere
+   9. poj      6   0.85%   english #9: for
+  10. fio      6   0.85%   english #10: ent
+
+ciphertext letters, most common first: cfhkqiogmupyvjraednlzwsx
+english   letters, most common first: etaoinshrdlcumwfgypbvkjxqz
+ciphertext: 1446 chars, 242 words, 149 distinct
+dictionary: 73201 words
+solved in 0.0s, 150 search nodes, 24/26 letters pinned by the search
+sanity check: 238/242 decrypted words are real English (98.3%)
+
+=== KEY ===
+cipher : abcdefghijklmnopqrstuvwxyz
+plain  : gjemftoahpswrbicnyvzluxqdk
+
+(read it the other way round for the encryption key)
+plain  : abcdefghijklmnopqrstuvwxyz
+cipher : hnpyceaiobzudqgjxmkfvslwrt
+
+=== RECOVERED PLAINTEXT ===
+the security of a cipher must never depend on keeping the algorithm itself a
+secret. this principle was stated by auguste kerckhoffs in the nineteenth
+century, and it remains the foundation of modern cryptography. a system should
+stay secure even when everything about it, except the key, is public knowledge.
+substitution ciphers fail this test badly. they hide the identity of each
+letter, but they do not hide the shape of the language underneath. the letter e
+is the most common letter in english text, and it stays the most common letter
+after the substitution is applied. the word the appears more often than any
+other word, and a three letter word that repeats constantly is a very strong
+clue. frequency analysis exploits exactly this leakage. an analyst counts the
+single letters, then the pairs, then the triples, and matches those counts
+against the known statistics of the language. within a few careful guesses the
+mapping begins to collapse, and once a handful of letters are fixed the
+remaining words can be read almost directly. modern block ciphers defeat this
+attack because a single change in the input changes roughly half of the output
+bits, and because the same plaintext block does not always produce the same
+ciphertext block. that last property depends on the mode of operation rather
+than on the cipher itself, which is why choosing a mode carelessly can undo all
+of the strength that the underlying algorithm provides.
+
+
+written to /home/user/Client-Acquisition-System-for-Clinibot/seed-labs/secret-key-encryption/Files/plaintext_recovered.txt
+
+############ TASK 2  ciphers and modes ############
+input: 44 bytes
+
+=== three ciphers, as the task asks ===
+aes-128-cbc    ciphertext   48 bytes   be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899...
+               round trip OK
+aes-128-cfb    ciphertext   44 bytes   eb0d40cd4d1c208b93dc8568951e7471b79479ef46833dea...
+               round trip OK
+bf-cbc         ciphertext   48 bytes   21b40e05baa9c5f0a24c23341b557bff3f1cbfc31fc8371b...
+               round trip OK
+
+=== a few more modes for comparison ===
+aes-128-ecb    ciphertext   48 bytes   7873b7644794df44410a65bc2221eb4eec1afa871c1f03e6...
+               round trip OK
+aes-128-ofb    ciphertext   44 bytes   eb0d40cd4d1c208b93dc8568951e74713c11a67288e27b12...
+               round trip OK
+aes-128-ctr    ciphertext   44 bytes   eb0d40cd4d1c208b93dc8568951e74710907f13a8e01aee1...
+               round trip OK
+aes-256-cbc    ciphertext   48 bytes   636fa262f2a2ac6235db0097e7b86ab2b6e97fb56aae78ff...
+               round trip OK
+
+full list of ciphers this openssl supports: openssl enc -ciphers
+
+############ TASK 3  ECB vs CBC ############
+wrote /home/user/Client-Acquisition-System-for-Clinibot/seed-labs/secret-key-encryption/task3_ecb_vs_cbc/../Files/pic_original.bmp: 480x320, 460854 bytes, 54-byte header
+ecb  -> ../results/task3/pic_ecb.bmp (460864 bytes)
+cbc  -> ../results/task3/pic_cbc.bmp (460864 bytes)
+
+How much structure survives? Count how often the most common 16-byte
+block repeats - that repetition IS the leak.
+body.ecb    28800 blocks,    141 distinct, most common block repeats 17160 times
+body.cbc    28800 blocks,  28800 distinct, most common block repeats     1 times
+
+############ TASK 4  padding ############
+=== which modes pad at all? ===
+Input bytes | aes-128-ecb  aes-128-cbc  aes-128-cfb  aes-128-ofb  
+          5 | 16           16           5            5            
+         10 | 16           16           10           10           
+         16 | 32           32           16           16           
+
+=== what the padding actually contains (CBC, -nopad on decrypt; od replaces hexdump -C) ===
+--- plaintext was 5 bytes of 'A' ---
+000000 41 41 41 41 41 0b 0b 0b 0b 0b 0b 0b 0b 0b 0b 0b  >AAAAA...........<
+000010
+--- plaintext was 10 bytes of 'A' ---
+000000 41 41 41 41 41 41 41 41 41 41 06 06 06 06 06 06  >AAAAAAAAAA......<
+000010
+--- plaintext was 16 bytes of 'A' ---
+000000 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41  >AAAAAAAAAAAAAAAA<
+000010 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10  >................<
+000020
+
+############ TASK 5  error propagation ############
+plaintext: 1600 bytes
+corrupting one bit of byte 55 (offset 54, inside block 4) of each ciphertext
+
+  byte 54: 0x1b -> 0x13 (flipped mask 0x08)
+  aes-128-ecb       16 bytes wrong (67 bits), bytes 48..63, blocks [3]
+
+  byte 54: 0xad -> 0xa5 (flipped mask 0x08)
+  aes-128-cbc       17 bytes wrong (73 bits), bytes 48..70, blocks [3, 4]
+
+  byte 54: 0x81 -> 0x89 (flipped mask 0x08)
+  aes-128-cfb       17 bytes wrong (70 bits), bytes 54..79, blocks [3, 4]
+
+  byte 54: 0x47 -> 0x4f (flipped mask 0x08)
+  aes-128-ofb        1 bytes wrong (1 bits), bytes 54..54, blocks [3]
+
+
+############ TASK 6.1  IV reuse ############
+same key, same IV   (run1 vs run2): IDENTICAL
+same key, IV+1 bit  (run1 vs run3): different
+
+run1  be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899fd464d2e1dd28626
+run2  be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899fd464d2e1dd28626
+run3  614d8bf57d51e788d22efe8b24498e7b98cd2bf8beaff10f7ad1fd9e7dd88707
+
+Reusing an IV makes encryption deterministic: an eavesdropper learns
+when you sent the same message twice, without breaking AES at all.
+
+############ TASK 6.2  keystream reuse ############
+self-test (AES-128-OFB, IV deliberately reused)
+  P1 (known)   : This is a known message!
+  C1           : c3b4b08275e4d27c6d4add8cfd055e9c1ef56c81081794d0
+  C2           : d8aebd9427b781106d1fd881fa52519c1ef96c81001c94d0
+  recovered P2 : Order: Launch a missile!
+  actual    P2 : Order: Launch a missile!
+  RESULT       : PASS
+
+  The key was never needed. Neither was the IV.
+
+############ TASK 6.3  predictable IV ############
+=== Bob's secret is 'Yes' ===
+  Bob's IV1        : 000000000000000065b3139ec9c97cc5
+  Bob's ciphertext : 74fba0b9787e80610f453e135d984967
+  next IV (leaked) : 000000000000000065b3139ec9c97cc6
+  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0e
+                  my C = 74fba0b9787e80610f453e135d984967  MATCH
+  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e0c
+                  my C = 963f5170f1c6cb346e42913cc24274b5  no match
+
+  secret recovered : Yes
+  secret really was: Yes
+  RESULT           : PASS
+
+=== Bob's secret is 'No' ===
+  Bob's IV1        : 000000000000000099634184e168c09e
+  Bob's ciphertext : 1fab7bb859588bc67df64d7ba629ed26
+  next IV (leaked) : 000000000000000099634184e168c09f
+  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
+                  my C = a462e0999225c7f9aa4e2daf2b817e4c  no match
+  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e30
+                  my C = 1fab7bb859588bc67df64d7ba629ed26  MATCH
+
+  secret recovered : No
+  secret really was: No
+  RESULT           : PASS
+
+both cases identified correctly: True
+
+############ TASK 7  dictionary brute force ############
+dictionary: 74341 words shorter than 16 characters
+(no --ciphertext given, running the self-test)
+
+self-test: a key was picked from the dictionary at random
+  plaintext  : This is a top secret.
+  ciphertext : 2618f533a7782cc97b9eb768170eda436e25c7608b1649f253dde85d965ceff6
+  IV         : 00000000000000000000000000000000
+  cracking...
+  key found  : 'sealing' -> b'sealing#########'
+  it was     : 'sealing'
+  179964 keys tried in 1.33s (135,368 keys/sec)
+  RESULT     : PASS
+
+all tasks finished

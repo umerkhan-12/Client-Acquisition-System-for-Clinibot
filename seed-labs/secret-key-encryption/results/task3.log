@@ -1,0 +1,7 @@
+ecb  -> ../results/task3/pic_ecb.bmp (460864 bytes)
+cbc  -> ../results/task3/pic_cbc.bmp (460864 bytes)
+
+How much structure survives? Count how often the most common 16-byte
+block repeats - that repetition IS the leak.
+body.ecb    28800 blocks,    141 distinct, most common block repeats 17160 times
+body.cbc    28800 blocks,  28800 distinct, most common block repeats     1 times

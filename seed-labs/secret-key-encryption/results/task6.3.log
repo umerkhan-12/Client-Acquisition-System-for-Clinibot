@@ -1,0 +1,27 @@
+=== Bob's secret is 'Yes' ===
+  Bob's IV1        : 00000000000000006048c5858613f85e
+  Bob's ciphertext : 8dda571b08d218be6ba818725fe4ba71
+  next IV (leaked) : 00000000000000006048c5858613f85f
+  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
+                  my C = 8dda571b08d218be6ba818725fe4ba71  MATCH
+  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e30
+                  my C = b83b7ce46ce769638674047f62e0a50e  no match
+
+  secret recovered : Yes
+  secret really was: Yes
+  RESULT           : PASS
+
+=== Bob's secret is 'No' ===
+  Bob's IV1        : 0000000000000000c7c4adfc9e31c1b4
+  Bob's ciphertext : 54f24a017273755c17e55ed1e28361d2
+  next IV (leaked) : 0000000000000000c7c4adfc9e31c1b5
+  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
+                  my C = 8882b635e274c82913ea41e0475d6dd7  no match
+  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e0c
+                  my C = 54f24a017273755c17e55ed1e28361d2  MATCH
+
+  secret recovered : No
+  secret really was: No
+  RESULT           : PASS
+
+both cases identified correctly: True

@@ -1,0 +1,9 @@
+self-test (AES-128-OFB, IV deliberately reused)
+  P1 (known)   : This is a known message!
+  C1           : 890f1819db0bbd24a24d9b395525e9fa75923cf7a10224d5
+  C2           : 9215150f8958ee48a2189e345272e6fa759e3cf7a90924d5
+  recovered P2 : Order: Launch a missile!
+  actual    P2 : Order: Launch a missile!
+  RESULT       : PASS
+
+  The key was never needed. Neither was the IV.

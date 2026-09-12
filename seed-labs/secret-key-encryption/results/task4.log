@@ -1,0 +1,17 @@
+=== which modes pad at all? ===
+Input bytes | aes-128-ecb  aes-128-cbc  aes-128-cfb  aes-128-ofb  
+          5 | 16           16           5            5            
+         10 | 16           16           10           10           
+         16 | 32           32           16           16           
+
+=== what the padding actually contains (CBC, -nopad on decrypt; od replaces hexdump -C) ===
+--- plaintext was 5 bytes of 'A' ---
+000000 41 41 41 41 41 0b 0b 0b 0b 0b 0b 0b 0b 0b 0b 0b  >AAAAA...........<
+000010
+--- plaintext was 10 bytes of 'A' ---
+000000 41 41 41 41 41 41 41 41 41 41 06 06 06 06 06 06  >AAAAAAAAAA......<
+000010
+--- plaintext was 16 bytes of 'A' ---
+000000 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41  >AAAAAAAAAAAAAAAA<
+000010 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10  >................<
+000020
