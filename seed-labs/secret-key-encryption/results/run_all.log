@@ -48,7 +48,7 @@ ciphertext letters, most common first: cfhkqiogmupyvjraednlzwsx
 english   letters, most common first: etaoinshrdlcumwfgypbvkjxqz
 ciphertext: 1446 chars, 242 words, 149 distinct
 dictionary: 73201 words
-solved in 0.0s, 150 search nodes, 24/26 letters pinned by the search
+solved in 0.0s, 150 search nodes, 24/26 letters pinned by the search, 0 corrected by refinement
 sanity check: 238/242 decrypted words are real English (98.3%)
 
 === KEY ===
@@ -108,6 +108,7 @@ full list of ciphers this openssl supports: openssl enc -ciphers
 
 ############ TASK 3  ECB vs CBC ############
 wrote /home/user/Client-Acquisition-System-for-Clinibot/seed-labs/secret-key-encryption/task3_ecb_vs_cbc/../Files/pic_original.bmp: 480x320, 460854 bytes, 54-byte header
+picture: ../Files/pic_original.bmp -> ../results/task3
 ecb  -> ../results/task3/pic_ecb.bmp (460864 bytes)
 cbc  -> ../results/task3/pic_cbc.bmp (460864 bytes)
 
@@ -166,8 +167,8 @@ when you sent the same message twice, without breaking AES at all.
 ############ TASK 6.2  keystream reuse ############
 self-test (AES-128-OFB, IV deliberately reused)
   P1 (known)   : This is a known message!
-  C1           : c3b4b08275e4d27c6d4add8cfd055e9c1ef56c81081794d0
-  C2           : d8aebd9427b781106d1fd881fa52519c1ef96c81001c94d0
+  C1           : b209a05608d98e90bfed626c4662f89dc77cc67a942e5466
+  C2           : a913ad405a8addfcbfb867614135f79dc770c67a9c255466
   recovered P2 : Order: Launch a missile!
   actual    P2 : Order: Launch a missile!
   RESULT       : PASS
@@ -176,26 +177,26 @@ self-test (AES-128-OFB, IV deliberately reused)
 
 ############ TASK 6.3  predictable IV ############
 === Bob's secret is 'Yes' ===
-  Bob's IV1        : 000000000000000065b3139ec9c97cc5
-  Bob's ciphertext : 74fba0b9787e80610f453e135d984967
-  next IV (leaked) : 000000000000000065b3139ec9c97cc6
-  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0e
-                  my C = 74fba0b9787e80610f453e135d984967  MATCH
+  Bob's IV1        : 00000000000000003bb604d3cdf83de8
+  Bob's ciphertext : 9c368d1a247348f00b7ca3c05f0e7565
+  next IV (leaked) : 00000000000000003bb604d3cdf83de9
+  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
+                  my C = 9c368d1a247348f00b7ca3c05f0e7565  MATCH
   guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e0c
-                  my C = 963f5170f1c6cb346e42913cc24274b5  no match
+                  my C = e4ac6bae37f05aa3d4c53ecb3addc009  no match
 
   secret recovered : Yes
   secret really was: Yes
   RESULT           : PASS
 
 === Bob's secret is 'No' ===
-  Bob's IV1        : 000000000000000099634184e168c09e
-  Bob's ciphertext : 1fab7bb859588bc67df64d7ba629ed26
-  next IV (leaked) : 000000000000000099634184e168c09f
+  Bob's IV1        : 000000000000000064824f3ae32c54d4
+  Bob's ciphertext : 285ff7faeef5ca5278e6f5905426bea8
+  next IV (leaked) : 000000000000000064824f3ae32c54d5
   guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
-                  my C = a462e0999225c7f9aa4e2daf2b817e4c  no match
-  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e30
-                  my C = 1fab7bb859588bc67df64d7ba629ed26  MATCH
+                  my C = 196f94d86eb042bf1f2b262e5a1ed2fd  no match
+  guess No   -> my Q = 4e6f0e0e0e0e0e0e0e0e0e0e0e0e0e0c
+                  my C = 285ff7faeef5ca5278e6f5905426bea8  MATCH
 
   secret recovered : No
   secret really was: No
@@ -209,12 +210,164 @@ dictionary: 74341 words shorter than 16 characters
 
 self-test: a key was picked from the dictionary at random
   plaintext  : This is a top secret.
-  ciphertext : 2618f533a7782cc97b9eb768170eda436e25c7608b1649f253dde85d965ceff6
+  ciphertext : eefa6936668c78ed57f13a01c7f599fa76f5ecd330454bd48e9b6668cf4f6c6d
   IV         : 00000000000000000000000000000000
   cracking...
-  key found  : 'sealing' -> b'sealing#########'
-  it was     : 'sealing'
-  179964 keys tried in 1.33s (135,368 keys/sec)
+  key found  : 'galleon' -> b'galleon#########'
+  it was     : 'galleon'
+  101102 keys tried in 0.78s (130,147 keys/sec)
   RESULT     : PASS
+
+############ OFFICIAL LABSETUP DATA ############
+
+--- Task 1: the lab's ciphertext.txt ---
+ciphertext: 4759 chars, 800 words, 411 distinct
+dictionary: 73201 words
+solved in 45.0s, 1196032 search nodes, 23/26 letters pinned by the search, 1 corrected by refinement
+sanity check: 763/800 decrypted words are real English (95.4%)
+
+=== KEY ===
+cipher : abcdefghijklmnopqrstuvwxyz
+plain  : cfmypvbrlqxwiejdsgkhnazotu
+
+(read it the other way round for the encryption key)
+plain  : abcdefghijklmnopqrstuvwxyz
+cipher : vgapnbrtmosicuxejhqyzflkdw
+
+=== RECOVERED PLAINTEXT ===
+the oscars turn  on sunday which seems about right after this long strange
+awards trip the bagger feels like a nonagenarian too
+
+the awards race was bookended by the demise of harvey weinstein at its outset
+and the apparent implosion of his film company at the end and it was shaped by
+the emergence of metoo times up blackgown politics armcandy activism and
+a national conversation as brief and mad as a fever dream about whether there
+ought to be a president winfrey the season didnt just seem extra long it was
+extra long because the oscars were moved to the first weekend in march to
+avoid conflicting with the closing ceremony of the winter olympics thanks
+pyeongchang
+
+one big question surrounding this years academy awards is how or if the
+ceremony will address metoo especially after the golden globes which became
+a jubilant comingout party for times up the movement spearheaded by 
+powerful hollywood women who helped raise millions of dollars to fight sexual
+harassment around the country
+
+signaling their support golden globes attendees swathed themselves in black
+sported lapel pins and sounded off about sexist power imbalances from the red
+carpet and the stage on the air e was called out about pay inequity after
+its former anchor catt sadler quit once she learned that she was making far
+less than a male cohost and during the ceremony natalie portman took a blunt
+and satisfying dig at the allmale roster of nominated directors how could
+that be topped
+
+as it turns out at least in terms of the oscars it probably wont be
+
+women involved in times up said that although the globes signified the
+initiatives launch they never intended it to be just an awards season
+campaign or one that became associated only with redcarpet actions instead
+a spokeswoman said the group is working behind closed doors and has since
+amassed  million for its legal defense fund which after the globes was
+flooded with thousands of donations of  or less from people in some 
+countries
+
+
+no call to wear black gowns went out in advance of the oscars though the
+movement will almost certainly be referenced before and during the ceremony 
+especially since vocal metoo supporters like ashley judd laura dern and
+nicole kidman are scheduled presenters
+
+another feature of this season no one really knows who is going to win best
+picture arguably this happens a lot of the time inarguably the nailbiter
+narrative only serves the awards hype machine but often the people forecasting
+the race socalled oscarologists can make only educated guesses
+
+the way the academy tabulates the big winner doesnt help in every other
+category the nominee with the most votes wins but in the best picture
+category voters are asked to list their top movies in preferential order if a
+movie gets more than  percent of the firstplace votes it wins when no
+movie manages that the one with the fewest firstplace votes is eliminated and
+its votes are redistributed to the movies that garnered the eliminated ballots
+secondplace votes and this continues until a winner emerges
+
+it is all terribly confusing but apparently the consensus favorite comes out
+ahead in the end this means that endofseason awards chatter invariably
+involves tortured speculation about which film would most likely be voters
+second or third favorite and then equally tortured conclusions about which
+film might prevail
+
+in  it was a tossup between boyhood and the eventual winner birdman
+in  with lots of experts betting on the revenant or the big short the
+prize went to spotlight last year nearly all the forecasters declared la
+la land the presumptive winner and for two and a half minutes they were
+correct before an envelope snafu was revealed and the rightful winner
+moonlight was crowned
+
+this year awards watchers are unequally divided between three billboards
+outside ebbing missouri the favorite and the shape of water which is
+the baggers prediction with a few forecasting a hail mary win for get out
+
+but all of those films have historical oscarvoting patterns against them the
+shape of water has  nominations more than any other film and was also
+named the years best by the producers and directors guilds yet it was not
+nominated for a screen actors guild award for best ensemble and no film has
+won best picture without previously landing at least the actors nomination
+since braveheart in  this year the best ensemble sag ended up going to
+three billboards which is significant because actors make up the academys
+largest branch that film while divisive also won the best drama golden globe
+and the bafta but its filmmaker martin mcdonagh was not nominated for best
+director and apart from argo movies that land best picture without also
+earning best director nominations are few and far between
+
+
+
+
+
+
+written to /home/user/Client-Acquisition-System-for-Clinibot/seed-labs/secret-key-encryption/Files/official/plaintext_recovered.txt
+
+--- Task 3: the lab's pic_original.bmp ---
+picture: ../Files/official/pic_original.bmp -> ../results/task3_official
+ecb  -> ../results/task3_official/pic_ecb.bmp (184976 bytes)
+cbc  -> ../results/task3_official/pic_cbc.bmp (184976 bytes)
+
+How much structure survives? Count how often the most common 16-byte
+block repeats - that repetition IS the leak.
+body.ecb    11557 blocks,     84 distinct, most common block repeats  8390 times
+body.cbc    11557 blocks,  11557 distinct, most common block repeats     1 times
+
+--- Task 6.2: the P1/C1/C2 from the lab manual ---
+P1  : b'This is a known message!'
+C1  : a469b1c502c1cab966965e50425438e1bb1b5f9037a4c159
+C2  : bf73bcd3509299d566c35b5d450337e1bb175f903fafc159
+
+recovered P2 : 'Order: Launch a missile!'
+
+--- Task 6.3: the real oracle, if it has been built ---
+oracle: local process './known_iv'
+
+Bob's ciphertext : 0191f106171848356568e90615190c8f
+IV he used (IV1) : bcf7ebc027e22d04e0b7768534de774e
+
+testing "Yes"
+  next IV (IV2)  : 08cbbccf27e22d04e0b7768534de774e
+  my plaintext Q : ed5924020d0d0d0d0d0d0d0d0d0d0d0d   = IV2 xor IV1 xor pad("Yes")
+  Bob returned   : 0191f106171848356568e90615190c8f   <-- MATCHES Bob s ciphertext
+
+testing "No"
+  next IV (IV2)  : 0bdba70928e22d04e0b7768534de774e
+  my plaintext Q : f94342c7010e0e0e0e0e0e0e0e0e0e0e   = IV2 xor IV1 xor pad("No")
+  Bob returned   : 933009991e30b35558ce5f26b9caa645   no match
+
+Bob's secret message is "Yes".
+Recovered with one chosen-plaintext query per candidate, and without ever learning the key.
+
+--- Task 7: the lab's ciphertext, IV and words.txt ---
+dictionary: 25111 words shorter than 16 characters
+
+KEY FOUND: 'Syracuse'
+  as 16 bytes : b'Syracuse########'
+  as hex      : 53797261637573652323232323232323
+  66829 keys tried in 0.52s
 
 all tasks finished

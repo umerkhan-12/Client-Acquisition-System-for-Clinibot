@@ -11,25 +11,26 @@
 
 ## Summary
 
-All seven tasks were completed and every result below was produced by running the
-scripts in this repository — no result is quoted from the lab manual. Run
-`./run_all.sh` to reproduce the whole thing end to end.
+All seven tasks completed **against the official SEED `Labsetup` files** — the
+lab's own `ciphertext.txt`, `words.txt`, `pic_original.bmp`, and the real
+`encryption_oracle` compiled from the Labsetup's C++ source. Every number below
+came out of running the code. `./run_all.sh` reproduces it.
 
-| Task | What it shows | Result |
-|---|---|---|
-| 1 | Frequency analysis breaks substitution ciphers | Key recovered, **98.3%** of words decrypt to real English |
-| 2 | Ciphers and modes via `openssl enc` | 7 cipher/mode pairs encrypted and round-tripped |
-| 3 | ECB leaks plaintext structure | ECB kept **141 distinct blocks of 28,800**; CBC kept all 28,800 |
-| 4 | PKCS#5 padding | Block modes pad, stream modes do not; full block ⇒ whole extra block |
-| 5 | Error propagation | ECB 16 bytes, CBC 17, CFB 17, OFB **1 bit** |
-| 6.1 | IV reuse | Same key + same IV ⇒ byte-identical ciphertext |
-| 6.2 | IV reuse in a stream mode | Second plaintext recovered **without the key** |
-| 6.3 | Predictable IV | Bob's secret recovered in one chosen-plaintext query |
-| 7 | Weak key | Dictionary key found at **135,481 keys/sec** |
+| Task | Answer |
+|---|---|
+| 1 | Key recovered; plaintext is a New York Times Oscars column. **95.4%** of words verify against a dictionary |
+| 2 | 7 cipher/mode pairs encrypted and round-tripped |
+| 3 | ECB left **84 distinct blocks of 11,557** — the picture stays visible. CBC left all 11,557 |
+| 4 | Block modes pad, stream modes do not; an exact fit still gets a whole extra block of `0x10` |
+| 5 | One flipped bit damages: ECB 16 bytes · CBC 17 · CFB 17 · OFB **1 bit** |
+| 6.1 | Same key + same IV ⇒ byte-identical ciphertext |
+| 6.2 | **P2 = `Order: Launch a missile!`** — recovered without the key |
+| 6.3 | **Bob's secret is `Yes`** — recovered from the real oracle, one query per guess |
+| 7 | **Key = `Syracuse########`**, found in 0.54 s |
 
-**Environment.** Ubuntu container, OpenSSL 3.0.13, Python 3.11 with PyCryptodome.
-The SEED VM ships OpenSSL 1.1.1 — the only difference that matters is noted under
-Task 2.
+**Environment.** Ubuntu container, OpenSSL 3.0.13, Python 3.11 with PyCryptodome,
+g++ 13.3 for the oracle. The SEED VM ships OpenSSL 1.1.1 — the one difference
+that matters is noted under Task 2.
 
 ---
 
@@ -37,108 +38,124 @@ Task 2.
 
 ### Method
 
-A monoalphabetic substitution replaces each letter with a fixed other letter, but
-it changes nothing else: word lengths, word boundaries, repeated-letter patterns
-and letter frequencies all survive. That is the whole weakness.
+A monoalphabetic substitution replaces each letter with a fixed other letter and
+changes nothing else. Word lengths, word boundaries, repeated-letter patterns and
+letter frequencies all survive — that is the whole weakness.
 
-Step one is counting. `task1_frequency_analysis/freq.py` counts single letters,
-bigrams and trigrams and lines them up against English:
+Counting first (`freq.py` on the lab's `ciphertext.txt`, 4759 characters,
+800 words):
 
 ```
-=== 1-gram (top 10 of 24 distinct) ===
-   1. c      162  13.73%   english #1: e
-   2. f      142  12.03%   english #2: t
-   3. h       88   7.46%   english #3: a
-   ...
-=== 2-gram (top 10 of 220 distinct) ===
-   1. fi      53   5.65%   english #1: th
-   2. ic      42   4.48%   english #2: he
+=== 1-gram (top 10 of 26 distinct) ===        === 2-gram ===        === 3-gram ===
+   1. n      488  12.41%   english #1: e         1. yt   115  th       1. ytn   78  the
+   2. y      373   9.49%   english #2: t         2. tn    89  he       2. vup   30  and
+   3. v      348   8.85%   english #3: a         3. mu    74  in       3. mur   20  ing
 ```
 
-That already gives three letters almost for free: `c → e`, `f → t`, and since
-`fi` is the commonest bigram and `fic` the commonest trigram, `fic → the`, so
-`i → h`.
+The statistics line up almost rank for rank, which hands over the first letters
+free: `n → e`, `y → t`, and since `ytn` is far and away the commonest trigram,
+`ytn → the`, so `t → h`.
 
-Step two is where hand-counting stalls, so `solve_substitution.py` finishes it by
+Hand-counting stalls after that, so `solve_substitution.py` finishes the job by
 **word-pattern matching**. Every ciphertext word keeps its shape: `mrrp` can only
-be a word of the form a-b-b-c. The program indexes 73,201 dictionary words by that
-shape, then searches for one consistent letter mapping that explains every word at
-once (backtracking, with iterative deepening on how many words it is allowed to
-give up on — proper nouns are not in the dictionary).
+decrypt to a word of the form a-b-b-c. The program indexes the dictionary by that
+shape and searches for a single letter mapping consistent with all 411 distinct
+words at once, allowing a bounded number of words to go unmatched (proper nouns
+are not in any dictionary).
+
+A final refinement pass swaps pairs of key letters and keeps a swap only when
+more of the text becomes real English. That step matters: the search alone left
+`j` and `x` transposed — they appear in too few words to be pinned by the
+constraints — which produced "xust seem ejtra long". One swap fixed it.
 
 ### Result
 
 ```
-ciphertext: 1446 chars, 242 words, 149 distinct
-solved in 0.0s, 150 search nodes, 24/26 letters pinned by the search
-sanity check: 238/242 decrypted words are real English (98.3%)
-
-=== KEY (encryption direction) ===
-plain  : abcdefghijklmnopqrstuvwxyz
-cipher : hnpyceaiobzudqgjxmkfvslwrt
+ciphertext: 4759 chars, 800 words, 411 distinct
+solved in 45.0s, 1073152 search nodes, 23/26 letters pinned, 1 corrected by refinement
+sanity check: 763/800 decrypted words are real English (95.4%)
 ```
 
-Only 150 search nodes — the constraints are so tight that the cipher essentially
-collapses on its own. The 4 words that are not in the dictionary are the proper
-nouns (*Auguste Kerckhoffs*) and the two letters never pinned (`j`, `q`) simply
-never occur in the text.
+**The key**
 
-Recovered plaintext (opening):
+```
+decryption   cipher : abcdefghijklmnopqrstuvwxyz
+             plain  : cfmypvbrlqxwiejdsgkhnazotu
 
-> the security of a cipher must never depend on keeping the algorithm itself a
-> secret. this principle was stated by auguste kerckhoffs in the nineteenth
-> century, and it remains the foundation of modern cryptography…
+encryption   plain  : abcdefghijklmnopqrstuvwxyz
+             cipher : vgapnbrtmosicuxejhqyzflkdw
+```
 
-**Conclusion.** A 26-letter substitution key has 26! ≈ 4×10²⁶ possibilities, which
-sounds unbreakable and is not. Brute force is the wrong attack; the key is
-irrelevant once the *language* leaks through. Security has to come from destroying
-that structure, not from a big key space.
+**The plaintext** — a New York Times "Carpetbagger" column about the Academy
+Awards:
+
+> the oscars turn on sunday which seems about right after this long strange
+> awards trip the bagger feels like a nonagenarian too
+>
+> the awards race was bookended by the demise of harvey weinstein at its outset
+> and the apparent implosion of his film company at the end and it was shaped by
+> the emergence of metoo times up blackgown politics armcandy activism and a
+> national conversation as brief and mad as a fever dream about whether there
+> ought to be a president winfrey the season didnt just seem extra long it was
+> extra long because the oscars were moved to the first weekend in march to
+> avoid conflicting with the closing ceremony of the winter olympics thanks
+> pyeongchang…
+
+The full text is in `results/task1_official.log`. The 37 words that fail the
+dictionary check are proper nouns and coinages — *pyeongchang*, *winfrey*,
+*metoo*, *blackgown* — not decryption errors.
+
+**Conclusion.** A 26-letter substitution key has 26! ≈ 4×10²⁶ possibilities,
+which sounds unbreakable and is not. Brute force is the wrong attack: the key
+stops mattering once the *language* leaks through. Security has to come from
+destroying that structure, not from a large key space.
 
 ---
 
 ## Task 2 — Encryption with Different Ciphers and Modes
-
-Command form (`-K`/`-iv` take raw hex, so no password derivation is involved):
 
 ```bash
 openssl enc -aes-128-cbc -e -in plain.txt -out cipher.bin \
   -K 00112233445566778899aabbccddeeff -iv 0102030405060708090a0b0c0d0e0f10
 ```
 
+`-K` and `-iv` take raw hex, so no password derivation is involved — the key is
+literally those 16 bytes.
+
 ### Result — 44-byte input
 
-| Cipher / mode | Ciphertext | First 24 bytes |
+| Cipher / mode | Ciphertext | First 16 bytes |
 |---|---|---|
-| aes-128-cbc | 48 | `be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899` |
-| aes-128-cfb | 44 | `eb0d40cd4d1c208b93dc8568951e7471b79479ef46833dea` |
-| bf-cbc | 48 | `21b40e05baa9c5f0a24c23341b557bff3f1cbfc31fc8371b` |
-| aes-128-ecb | 48 | `7873b7644794df44410a65bc2221eb4eec1afa871c1f03e6` |
-| aes-128-ofb | 44 | `eb0d40cd4d1c208b93dc8568951e74713c11a67288e27b12` |
-| aes-128-ctr | 44 | `eb0d40cd4d1c208b93dc8568951e74710907f13a8e01aee1` |
-| aes-256-cbc | 48 | `636fa262f2a2ac6235db0097e7b86ab2b6e97fb56aae78ff` |
+| aes-128-cbc | 48 | `be34106b88d2cbca3841b72b9499dc6c` |
+| aes-128-ecb | 48 | `7873b7644794df44410a65bc2221eb4e` |
+| bf-cbc | 48 | `21b40e05baa9c5f0a24c23341b557bff` |
+| aes-256-cbc | 48 | `636fa262f2a2ac6235db0097e7b86ab2` |
+| aes-128-cfb | 44 | `eb0d40cd4d1c208b93dc8568951e7471` |
+| aes-128-ofb | 44 | `eb0d40cd4d1c208b93dc8568951e7471` |
+| aes-128-ctr | 44 | `eb0d40cd4d1c208b93dc8568951e7471` |
 
-Every one decrypted back to the original (`round trip OK`).
+All seven decrypted back to the original.
 
 ### Observations
 
-1. **Block modes grow the message, stream modes do not.** CBC/ECB/Blowfish round
-   44 bytes up to 48; CFB/OFB/CTR emit exactly 44. Ciphertext length alone reveals
-   which family of mode is in use.
-2. **CFB, OFB and CTR share an identical first 16 bytes** — look at the table.
-   All three XOR the plaintext with `E(IV)` for the first block; they differ only
-   in how they generate *subsequent* keystream blocks. The same AES key and IV
-   therefore produce the same first block in all three.
+1. **Block modes grow the message; stream modes do not.** CBC, ECB and Blowfish
+   round 44 bytes up to 48; CFB, OFB and CTR emit exactly 44. Ciphertext length
+   alone reveals which family of mode is in use.
+2. **CFB, OFB and CTR produce an identical first block.** All three XOR the
+   plaintext with `E(IV)` to begin; they differ only in how they generate
+   *subsequent* keystream blocks, so the same key and IV give the same first 16
+   bytes in all three.
 3. **OpenSSL 3.x removed Blowfish from the default provider.** `-bf-cbc` fails
-   with "unknown option" until you add `-provider legacy -provider default`. On
-   the SEED VM's OpenSSL 1.1.1 the flags are unnecessary. Blowfish also uses a
-   64-bit block, so its IV is 8 bytes, not 16.
+   until you add `-provider legacy -provider default`; on the SEED VM's OpenSSL
+   1.1.1 the flags are unnecessary. Blowfish also has a 64-bit block, so its IV
+   is 8 bytes, not 16.
 
 ---
 
 ## Task 3 — ECB vs CBC on a Picture
 
-The picture is encrypted whole, then the original 54-byte BMP header is pasted
-back over the encrypted one so a viewer still recognises the file:
+The file is encrypted whole, then the original 54-byte BMP header is pasted back
+over the encrypted one so a viewer still renders it:
 
 ```bash
 openssl enc -aes-128-ecb -e -in pic_original.bmp -out body.ecb -K $KEY
@@ -146,35 +163,42 @@ head -c 54 pic_original.bmp  >  pic_ecb.bmp
 tail -c +55 body.ecb        >>  pic_ecb.bmp
 ```
 
-### Result
+### The lab's picture
 
 | Original | Encrypted with ECB | Encrypted with CBC |
 |:--:|:--:|:--:|
-| ![original](report/img/original.png) | ![ecb](report/img/ecb.png) | ![cbc](report/img/cbc.png) |
+| ![original](report/img/official_original.png) | ![ecb](report/img/official_ecb.png) | ![cbc](report/img/official_cbc.png) |
 | the plaintext picture | **the picture is still there** | indistinguishable from noise |
 
-Measured over the 28,800 blocks of pixel data:
+### A second picture, as the task asks
 
-| Mode | Distinct blocks | Most common block repeats | Re-compressed as PNG |
-|---|---|---|---|
-| ECB | **141** | 17,160× | 11,364 bytes |
-| CBC | **28,800** | 1× | 461,800 bytes |
+| Original | ECB | CBC |
+|:--:|:--:|:--:|
+| ![original](report/img/original.png) | ![ecb](report/img/ecb.png) | ![cbc](report/img/cbc.png) |
+
+### Measured
+
+| Picture | Mode | Blocks | Distinct blocks | Most common repeats |
+|---|---|---|---|---|
+| lab's `pic_original.bmp` | ECB | 11,557 | **84** | 8,390× |
+| lab's `pic_original.bmp` | CBC | 11,557 | **11,557** | 1× |
+| second picture | ECB | 28,800 | **141** | 17,160× |
+| second picture | CBC | 28,800 | **28,800** | 1× |
 
 ### Why
 
-ECB encrypts each block independently: `C_i = E_k(P_i)`. Equal plaintext blocks
-give equal ciphertext blocks, so the picture's flat regions — the white
-background, the solid bar, the filled circle — stay flat, just recoloured. The
-outline is perfectly legible.
+ECB encrypts each block independently — `Cᵢ = E(Pᵢ)` — so equal plaintext blocks
+produce equal ciphertext blocks. Every flat region of the image stays flat, just
+recoloured, and the outline reads perfectly.
 
-CBC chains each block into the next: `C_i = E_k(P_i ⊕ C_{i-1})`. Identical
-plaintext blocks now encrypt differently because the previous ciphertext block
-differs, and the output is statistically indistinguishable from noise. The PNG
-re-compression figures are an independent confirmation: ECB output still contains
-enough structure to compress 40× smaller than CBC's.
+CBC chains each block into the next — `Cᵢ = E(Pᵢ ⊕ Cᵢ₋₁)` — so identical
+plaintext blocks encrypt differently and the output is statistically
+indistinguishable from noise. Re-compressing confirms it independently: the ECB
+output still compresses to a fraction of the CBC output's size, because structure
+is still in there.
 
-**Conclusion.** ECB does not hide patterns, only values. It should not be used to
-encrypt anything longer than a single block.
+**Conclusion.** ECB hides values, not patterns. It should not be used on anything
+longer than one block, no matter how strong the underlying cipher.
 
 ---
 
@@ -189,13 +213,13 @@ encrypt anything longer than a single block.
 | 16 | **32** | **32** | 16 | 16 |
 
 ECB and CBC must fill whole 16-byte blocks, so they pad. CFB and OFB use the
-cipher as a keystream generator and XOR it byte by byte — nothing to fill, so the
-ciphertext is exactly as long as the plaintext.
+cipher as a keystream generator and XOR byte by byte — there is nothing to fill,
+so ciphertext length equals plaintext length.
 
 ### What the padding contains
 
-Decrypting with `-nopad` shows the padding itself (PKCS#5/#7: append *N* bytes,
-each holding the value *N*):
+Decrypting with `-nopad` exposes it. PKCS#5/#7 appends *N* bytes each holding the
+value *N*:
 
 ```
 5 bytes of 'A':
@@ -211,7 +235,7 @@ each holding the value *N*):
 
 11 bytes of `0x0b`, 6 of `0x06`, and — the case worth understanding — a **whole
 extra block** of 16 × `0x10` when the plaintext already filled a block exactly.
-Without that rule, a message genuinely ending in a byte `0x01` could not be told
+Without that rule a message genuinely ending in a byte `0x01` could not be told
 apart from a padded one; padding must always be present so it can always be
 removed unambiguously.
 
@@ -219,8 +243,8 @@ removed unambiguously.
 
 ## Task 5 — Error Propagation
 
-A 1600-byte file was encrypted in four modes, one bit was flipped in byte 55 of
-each ciphertext (offset 54, inside block 4), then decrypted with `-nopad`.
+A 1600-byte file encrypted in four modes; one bit flipped in byte 55 of each
+ciphertext (offset 54, inside block 4); decrypted with `-nopad`.
 
 | Mode | Bytes corrupted | Bits | Where |
 |---|---|---|---|
@@ -229,24 +253,21 @@ each ciphertext (offset 54, inside block 4), then decrypted with `-nopad`.
 | aes-128-cfb | 17 | 70 | 1 byte at offset 54, plus all of block 4 (bytes 64–79) |
 | aes-128-ofb | **1** | **1** | offset 54 only |
 
-### Why each behaves that way
-
-- **ECB** — `P_i = D_k(C_i)`. The damaged block decrypts to garbage; every other
-  block is decrypted independently and is untouched. Exactly one block lost.
-- **CBC** — `P_i = D_k(C_i) ⊕ C_{i-1}`. Block 3 is garbage for the same reason.
-  Block 4 uses the damaged `C_3` only as an XOR mask, so the damage passes through
-  *positionally*: one flipped ciphertext bit ⇒ the same one bit flipped in block 4,
-  at offset 54 + 16 = 70. Recoverable damage, and self-healing after two blocks.
-- **CFB** — `P_i = C_i ⊕ E_k(C_{i-1})`. The XOR is direct, so byte 54 loses just
-  that one bit; but the damaged block then feeds the cipher for the *next* block,
-  destroying all 16 bytes of block 4. Mirror image of CBC.
+- **ECB** — `Pᵢ = D(Cᵢ)`. The damaged block decrypts to garbage; every other block
+  is independent and untouched. Exactly one block lost.
+- **CBC** — `Pᵢ = D(Cᵢ) ⊕ Cᵢ₋₁`. Block 3 is garbage for the same reason; block 4
+  uses the damaged `C₃` only as an XOR mask, so the damage passes through
+  *positionally* — the same single bit, at offset 54 + 16 = 70.
+- **CFB** — `Pᵢ = Cᵢ ⊕ E(Cᵢ₋₁)`. Byte 54 loses just that bit, but the damaged
+  block then feeds the cipher and destroys all 16 bytes of block 4. The mirror
+  image of CBC.
 - **OFB** — the keystream comes from the IV alone and never touches the
-  ciphertext, so a damaged bit corrupts precisely that bit. Nothing propagates.
+  ciphertext, so a damaged bit corrupts precisely that bit.
 
-**Practical reading.** OFB/CTR are best when the channel is noisy and you want
-minimal damage — but that same malleability is a security problem: an attacker who
-knows the plaintext can flip chosen bits of it undetectably. None of these modes
-provide integrity; that needs a MAC or an AEAD mode such as GCM.
+**Practical reading.** OFB and CTR limit damage on a noisy channel, but that same
+malleability is a security problem: an attacker who knows the plaintext can flip
+chosen bits of it undetectably. None of these modes provide integrity — that
+needs a MAC or an AEAD mode such as GCM.
 
 ---
 
@@ -263,109 +284,138 @@ run2  be34106b88d2cbca3841b72b9499dc6c420c8e68fc7f8899
 run3  614d8bf57d51e788d22efe8b24498e7b98cd2bf8beaff10f
 ```
 
-One bit of IV change alters the entire ciphertext (the avalanche effect). With the
-IV repeated, encryption becomes deterministic: an eavesdropper can tell when the
-same message is sent twice without breaking AES at all. **The IV must never
-repeat under one key.**
+One bit of IV change alters the entire ciphertext. With the IV repeated,
+encryption becomes deterministic: an eavesdropper learns when the same message
+was sent twice without breaking AES at all. **An IV must never repeat under one
+key.**
 
 ### 6.2 — The same IV in a stream mode
 
-In OFB/CFB/CTR the cipher produces a keystream that depends only on the key and
-IV, and `C = P ⊕ KS`. Reuse both and two messages get the *same* keystream:
+In OFB/CFB/CTR the cipher generates a keystream that depends only on key and IV,
+and `C = P ⊕ KS`. Reuse both and two messages share a keystream, which then
+cancels:
 
 ```
-C1 ⊕ C2 = (P1 ⊕ KS) ⊕ (P2 ⊕ KS) = P1 ⊕ P2
+C1 ⊕ C2 = (P1 ⊕ KS) ⊕ (P2 ⊕ KS) = P1 ⊕ P2      so      P2 = C1 ⊕ P1 ⊕ C2
 ```
 
-The keystream cancels. Knowing one plaintext gives the other:
-`P2 = C1 ⊕ P1 ⊕ C2`.
+With the values from the lab manual:
 
 ```
-self-test (AES-128-OFB, IV deliberately reused)
-  P1 (known)   : This is a known message!
-  C1           : 890f1819db0bbd24a24d9b395525e9fa75923cf7a10224d5
-  C2           : 9215150f8958ee48a2189e345272e6fa759e3cf7a90924d5
-  recovered P2 : Order: Launch a missile!
-  RESULT       : PASS
+P1 : This is a known message!
+C1 : a469b1c502c1cab966965e50425438e1bb1b5f9037a4c159
+C2 : bf73bcd3509299d566c35b5d450337e1bb175f903fafc159
+
+recovered P2 : 'Order: Launch a missile!'
 ```
 
-The key was never needed, and neither was AES. This is the two-time pad, and it
-is the same mistake that broke WEP and Microsoft's PPTP.
+No key, no IV, no AES. This is the two-time pad, and it is the same mistake that
+broke WEP and Microsoft's PPTP.
 
-### 6.3 — A predictable IV
+**The lab's follow-up question — what if OFB is replaced by CFB?** Only the
+**first 16 bytes** of P2 come out: `Order: Launch a `. In CFB the first keystream
+block is `E(IV)`, identical for both messages, so block 1 cancels exactly as
+before. From block 2 onward CFB derives its keystream from the *previous
+ciphertext block*, which differs between the two messages, so the keystreams
+diverge and nothing beyond the first block is revealed. In OFB the keystream
+depends only on key and IV, never on the data, so the whole 24 bytes come out.
+
+### 6.3 — A predictable IV, against the lab's real oracle
 
 Unique is not enough for CBC; the IV must also be **unpredictable**. CBC computes
-`C1 = E_k(P1 ⊕ IV)`, and `E_k` is deterministic — so an attacker who chooses a
-plaintext *and* knows the IV that will be used can force the cipher's input to any
-value.
+`C₁ = E(P₁ ⊕ IV)` and `E` is deterministic — so an attacker who chooses a
+plaintext *and* knows the IV it will get can force the cipher's input to any
+value they like.
 
-Bob encrypts his secret (`"Yes"` or `"No"`) with `IV1`, giving
-`C = E_k(pad(S) ⊕ IV1)`, then offers to encrypt the attacker's message with the
-next IV, `IV2` — which is a counter. The attacker sends
+Bob encrypts his secret with `IV1`, giving `C = E(pad(S) ⊕ IV1)`, then offers to
+encrypt the attacker's message with `IV2` — which he announces. So send
 
 ```
 Q = IV2 ⊕ IV1 ⊕ pad("Yes")
 ```
 
-so Bob computes `E_k(Q ⊕ IV2) = E_k(IV1 ⊕ pad("Yes"))`. If that equals `C`, the
-secret was `"Yes"`.
+and Bob computes `E(Q ⊕ IV2) = E(IV1 ⊕ pad("Yes"))`. Equal to `C` ⟹ the secret
+was `"Yes"`.
+
+The Labsetup ships the oracle as C++ (`encryption_oracle/known_iv.cpp`); it was
+compiled and attacked directly, which is equivalent to `nc 10.9.0.80 3000` on the
+lab network:
 
 ```
-=== Bob's secret is 'Yes' ===
-  Bob's IV1        : 00000000000000006048c5858613f85e
-  Bob's ciphertext : 8dda571b08d218be6ba818725fe4ba71
-  next IV (leaked) : 00000000000000006048c5858613f85f
-  guess Yes  -> my Q = 5965730d0d0d0d0d0d0d0d0d0d0d0d0c
-                  my C = 8dda571b08d218be6ba818725fe4ba71  MATCH
-  guess No   -> my C = b83b7ce46ce769638674047f62e0a50e  no match
-  secret recovered : Yes        RESULT: PASS
+$ g++ -std=c++17 -o known_iv known_iv.cpp -lcrypto
+$ python3 task6.3_attack_oracle.py --cmd ./known_iv
 
-=== Bob's secret is 'No'  ===   secret recovered : No     RESULT: PASS
+Bob's ciphertext : 5fb6241cfe1c401246801b9248fe2950
+IV he used (IV1) : 657e150f53bd3b7475304c3bffa1fccd
+
+testing "Yes"
+  next IV (IV2)  : 90b2e44653bd3b7475304c3bffa1fccd
+  my plaintext Q : aca982440d0d0d0d0d0d0d0d0d0d0d0d   = IV2 xor IV1 xor pad("Yes")
+  Bob returned   : 5fb6241cfe1c401246801b9248fe2950   <-- MATCHES Bob's ciphertext
+
+testing "No"
+  next IV (IV2)  : 9a65b19d53bd3b7475304c3bffa1fccd
+  my plaintext Q : b174aa9c0e0e0e0e0e0e0e0e0e0e0e0e   = IV2 xor IV1 xor pad("No")
+  Bob returned   : d79160dd4df89a235c7c5d773270e423   no match
+
+Bob's secret message is "Yes".
 ```
 
-Both cases identified, one query each, no key recovery. Note the guess must be
-the **padded** block (`"Yes"` + 13 × `0x0d`), since that is what the cipher
-actually consumed. This is precisely the flaw behind the BEAST attack on TLS 1.0,
-which chained CBC IVs from the previous record and so made them predictable. TLS
-1.1 fixed it by giving every record a fresh random IV.
+Note the guess must be the **padded** block — `"Yes"` plus 13 × `0x0d` — because
+that is what the cipher actually consumed. Note also the IVs: only the first four
+bytes change between queries (`657e150f…` → `90b2e446…`, same tail). The oracle
+advances the IV by adding a `rand()` to its first 8 bytes, which is exactly the
+kind of counter-like generation that makes an IV predictable.
+
+This is the flaw behind the **BEAST** attack on TLS 1.0, which chained each
+record's IV from the previous record and so made it predictable. TLS 1.1 fixed it
+by giving every record a fresh random IV.
 
 ---
 
 ## Task 7 — Brute-Forcing a Dictionary Key
 
-The key is an English word of fewer than 16 characters, padded to 16 bytes with
-`#`. The nominal key space is 2¹²⁸; the real one is the size of a dictionary.
+The key is an English word shorter than 16 characters, padded to 16 bytes with
+`#` (`0x23`). The nominal key space is 2¹²⁸; the real one is the size of a
+dictionary.
 
 ```
-dictionary: 74341 words shorter than 16 characters
-  plaintext  : This is a top secret.
-  ciphertext : 32cb8a96a1e23c3ddd3e62f8eb433a8266e2cb27ed4a7c645c32e701fbfd4ff1
-  IV         : 00000000000000000000000000000000
-  key found  : 'petrol' -> b'petrol##########'
-  153694 keys tried in 1.13s (135,481 keys/sec)
-  RESULT     : PASS
+Plaintext  : This is a top secret.        (exactly 21 characters)
+Ciphertext : 764aa26b55a4da654df6b19e4bce00f4ed05e09346fb0e762583cb7da2ac93a2
+IV         : aabbccddeeff00998877665544332211
+Cipher     : aes-128-cbc
+Dictionary : the Labsetup's words.txt (25,143 words; 25,111 short enough)
 ```
 
-Under two seconds in single-threaded Python, testing both the dictionary form and
-its capitalisations. Only the first ciphertext block has to be computed per
-candidate, since one block is already enough to identify the key.
+```
+KEY FOUND: 'Syracuse'
+  as 16 bytes : b'Syracuse########'
+  as hex      : 53797261637573652323232323232323
+  66830 keys tried in 0.54s
+```
+
+Half a second in single-threaded Python. Two details matter: the plaintext is
+exactly 21 characters, so `echo -n` is required — a trailing newline changes the
+padding and nothing will ever match; and only the first ciphertext block needs
+computing per candidate, since one block already identifies the key.
 
 **Conclusion.** Key *length* is not key *strength*. A 128-bit key drawn from a
-10⁵-word dictionary carries about 17 bits of entropy. Keys must be generated
-randomly, or derived from a passphrase through a deliberately slow KDF
-(PBKDF2, bcrypt, scrypt, Argon2) so that each guess costs the attacker real time.
+25,000-word dictionary carries about 15 bits of entropy. Keys must be generated
+randomly, or derived from a passphrase through a deliberately slow KDF — PBKDF2,
+bcrypt, scrypt, Argon2 — so that every guess costs the attacker real time.
 
 ---
 
 ## What the lab establishes
 
-1. Classical ciphers fail because they preserve the statistics of the language.
-2. A strong cipher used in a weak mode is weak — ECB leaks structure regardless of
-   AES's strength.
+1. Classical ciphers fail because they preserve the statistics of the language
+   underneath them.
+2. A strong cipher in a weak mode is weak — ECB leaks structure regardless of
+   how good AES is.
 3. IVs carry real requirements: **never repeated** (6.1, 6.2) and, for CBC,
-   **unpredictable** (6.3).
-4. Encryption is not integrity. Every mode here let a flipped bit through, some
-   with surgical precision.
+   **never predictable** (6.3).
+4. Encryption is not integrity. Every mode here passed a flipped bit through,
+   some with surgical precision.
 5. The key is the whole secret, so it must be random. A memorable key is a
    dictionary entry.
 
@@ -374,61 +424,49 @@ randomly, or derived from a passphrase through a deliberately slow KDF
 ## Running it
 
 ```bash
-./run_all.sh                 # every task, start to finish
+./run_all.sh          # every task against the files in Files/
 ```
 
-Individual tasks:
+Against the official Labsetup data (`Files/official/`, copied from the SEED Labs
+repository):
 
 ```bash
-python3 task1_frequency_analysis/solve_substitution.py Files/ciphertext.txt
-bash    task2_ciphers/task2.sh
-bash    task3_ecb_vs_cbc/task3.sh
-bash    task4_padding/task4.sh
-bash    task5_error_propagation/task5.sh
-bash    task6_iv/task6.1_iv_experiment.sh
-python3 task6_iv/task6.2_keystream_reuse.py
-cd task6_iv && python3 task6.3_predictable_iv.py
-cd task7_bruteforce && python3 task7_bruteforce.py
+# Task 1
+python3 task1_frequency_analysis/solve_substitution.py Files/official/ciphertext.txt \
+        --dict Files/words.txt --budget 45
+
+# Task 3
+bash task3_ecb_vs_cbc/task3.sh ../Files/official/pic_original.bmp
+
+# Task 6.2
+python3 task6_iv/task6.2_keystream_reuse.py --p1 "This is a known message!" \
+    --c1 a469b1c502c1cab966965e50425438e1bb1b5f9037a4c159 \
+    --c2 bf73bcd3509299d566c35b5d450337e1bb175f903fafc159
+
+# Task 6.3 - against the lab's Docker oracle, or a local build of it
+python3 task6_iv/task6.3_attack_oracle.py --host 10.9.0.80 --port 3000
+python3 task6_iv/task6.3_attack_oracle.py --cmd ./known_iv
+
+# Task 7
+python3 task7_bruteforce/task7_bruteforce.py --plaintext "This is a top secret." \
+    --ciphertext 764aa26b55a4da654df6b19e4bce00f4ed05e09346fb0e762583cb7da2ac93a2 \
+    --iv aabbccddeeff00998877665544332211 --words Files/official/words.txt
 ```
 
-### Using the official SEED Labsetup files
-
-This repository generates its own inputs so it runs anywhere, including without
-the SEED VM. To grade against the lab's own data, drop the Labsetup files into
-`Files/` and pass them in — the scripts all take the values as arguments:
-
-```bash
-# Task 1 — the lab's ciphertext
-python3 task1_frequency_analysis/solve_substitution.py Files/ciphertext.txt
-
-# Task 6.2 — P1, C1, C2 exactly as printed in the lab handout
-python3 task6_iv/task6.2_keystream_reuse.py \
-    --p1 "This is a known message!" --c1 <hex> --c2 <hex>
-
-# Task 6.3 — against the real oracle (nc 10.9.0.80 3000)
-python3 task6_iv/task6.3_predictable_iv.py --iv1 <hex> --iv2 <hex> --ct <hex>
-
-# Task 7 — the lab's ciphertext and words.txt
-python3 task7_bruteforce/task7_bruteforce.py \
-    --ciphertext <hex> --iv 00000000000000000000000000000000 \
-    --words Files/words.txt
-```
-
-Copy those hex values from your own handout; a single mistyped digit corrupts
-exactly one byte of the answer, and the scripts warn when the output is not
-printable text.
+Captured output of every run is in `results/`, with the official-data runs named
+`*_official.log`.
 
 ## Layout
 
 ```
-Files/                      inputs: article, ciphertext, picture, word list
+Files/                      generated inputs, plus official/ from the SEED repo
 task1_frequency_analysis/   freq.py, make_ciphertext.py, solve_substitution.py
 task2_ciphers/              task2.sh
 task3_ecb_vs_cbc/           make_bmp.py, task3.sh
 task4_padding/              task4.sh
 task5_error_propagation/    task5.sh, corrupt.py, compare.py
-task6_iv/                   6.1 shell, 6.2 + 6.3 python, bob_oracle.py
+task6_iv/                   6.1 shell, 6.2 python, 6.3 python (local Bob + real oracle)
 task7_bruteforce/           task7_bruteforce.py
-results/                    captured output of every run
-report/                     images and the PDF for submission
+results/                    captured output; *_official.log used the lab's own files
+report/                     figures and the submission PDF
 ```

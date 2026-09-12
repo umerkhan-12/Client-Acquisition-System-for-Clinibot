@@ -149,6 +149,38 @@ def decrypt(text, mapping):
     return "".join(mapping.get(ch, ch) if ch.isalpha() else ch for ch in text)
 
 
+def score_mapping(text, mapping, dictionary):
+    """How much of the text decrypts to real English, weighted by word length."""
+    words = re.findall(r"[a-z]+", decrypt(text, mapping))
+    return sum(len(w) for w in words if w in dictionary)
+
+
+def refine(mapping, text, dictionary):
+    """Hill-climb by swapping pairs of key letters.
+
+    The search can finish with two rare letters transposed - j and x, say,
+    which appear in too few words to be pinned down by the constraints alone.
+    Swapping any two assignments and keeping the swap only when more of the
+    text becomes real English fixes that, and cannot make a correct key worse.
+    """
+    current = dict(mapping)
+    best = score_mapping(text, current, dictionary)
+    swaps = 0
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(ALPHABET)):
+            for j in range(i + 1, len(ALPHABET)):
+                a, b = ALPHABET[i], ALPHABET[j]
+                trial = dict(current)
+                trial[a], trial[b] = current[b], current[a]
+                got = score_mapping(text, trial, dictionary)
+                if got > best:
+                    current, best, improved = trial, got, True
+                    swaps += 1
+    return current, swaps
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ciphertext", nargs="?",
@@ -177,12 +209,14 @@ def main():
         sys.exit(1)
 
     mapping = complete_mapping(partial)
+    mapping, swaps = refine(mapping, raw, dictionary)
     plaintext = decrypt(raw, mapping)
 
     words = re.findall(r"[a-z]+", plaintext)
     hits = sum(1 for w in words if w in dictionary)
     print(f"solved in {elapsed:.1f}s, {solver.nodes} search nodes, "
-          f"{len(partial)}/26 letters pinned by the search")
+          f"{len(partial)}/26 letters pinned by the search, "
+          f"{swaps} corrected by refinement")
     print(f"sanity check: {hits}/{len(words)} decrypted words are real English "
           f"({100.0 * hits / max(1, len(words)):.1f}%)")
 

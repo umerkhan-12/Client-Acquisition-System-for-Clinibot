@@ -6,13 +6,17 @@
 # encrypted bytes as pixels.
 set -eu
 cd "$(dirname "$0")"
+# Any .bmp may be given; defaults to the generated one.
+#   ./task3.sh ../Files/official/pic_original.bmp
+PIC=${1:-../Files/pic_original.bmp}
 OUT=../results/task3
+[ "$PIC" = "../Files/pic_original.bmp" ] || OUT=../results/task3_official
 mkdir -p "$OUT"
-PIC=../Files/pic_original.bmp
 KEY=00112233445566778899aabbccddeeff
 IV=0102030405060708090a0b0c0d0e0f10
 
 [ -f "$PIC" ] || python3 make_bmp.py
+echo "picture: $PIC -> $OUT"
 
 for mode in ecb cbc; do
   if [ "$mode" = ecb ]; then
@@ -28,10 +32,12 @@ done
 echo
 echo "How much structure survives? Count how often the most common 16-byte"
 echo "block repeats - that repetition IS the leak."
-python3 - <<'PY'
+python3 - "$OUT" <<'PY'
 import collections, os
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else '.', '')
-for name in ("../results/task3/body.ecb", "../results/task3/body.cbc"):
+import sys
+out = sys.argv[1] if len(sys.argv) > 1 else "../results/task3"
+for name in (f"{out}/body.ecb", f"{out}/body.cbc"):
     data = open(name, 'rb').read()[54:]
     blocks = [data[i:i+16] for i in range(0, len(data) - 15, 16)]
     c = collections.Counter(blocks)

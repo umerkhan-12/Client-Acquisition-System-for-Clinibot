@@ -1,0 +1,7 @@
+### Task 7 with the official ciphertext, IV and words.txt
+dictionary: 25111 words shorter than 16 characters
+
+KEY FOUND: 'Syracuse'
+  as 16 bytes : b'Syracuse########'
+  as hex      : 53797261637573652323232323232323
+  66830 keys tried in 0.54s

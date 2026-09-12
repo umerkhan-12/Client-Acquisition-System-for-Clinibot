@@ -8,3 +8,4 @@ __pycache__/
 # The repository root ignores *.log, but these logs ARE the evidence that
 # each task actually ran, so re-include them.
 !results/*.log
+known_iv

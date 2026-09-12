@@ -1,0 +1,6 @@
+### Task 6.2 with the P1/C1/C2 printed in the lab manual
+P1  : b'This is a known message!'
+C1  : a469b1c502c1cab966965e50425438e1bb1b5f9037a4c159
+C2  : bf73bcd3509299d566c35b5d450337e1bb175f903fafc159
+
+recovered P2 : 'Order: Launch a missile!'

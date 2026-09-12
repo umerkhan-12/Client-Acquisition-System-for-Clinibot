@@ -1,0 +1,17 @@
+oracle: local process '/tmp/claude-0/-home-user-Client-Acquisition-System-for-Clinibot/85b9d3f2-b5de-5112-8f06-00edd2f1adb9/scratchpad/oracle/known_iv'
+
+Bob's ciphertext : 5fb6241cfe1c401246801b9248fe2950
+IV he used (IV1) : 657e150f53bd3b7475304c3bffa1fccd
+
+testing "Yes"
+  next IV (IV2)  : 90b2e44653bd3b7475304c3bffa1fccd
+  my plaintext Q : aca982440d0d0d0d0d0d0d0d0d0d0d0d   = IV2 xor IV1 xor pad("Yes")
+  Bob returned   : 5fb6241cfe1c401246801b9248fe2950   <-- MATCHES Bob s ciphertext
+
+testing "No"
+  next IV (IV2)  : 9a65b19d53bd3b7475304c3bffa1fccd
+  my plaintext Q : b174aa9c0e0e0e0e0e0e0e0e0e0e0e0e   = IV2 xor IV1 xor pad("No")
+  Bob returned   : d79160dd4df89a235c7c5d773270e423   no match
+
+Bob's secret message is "Yes".
+Recovered with one chosen-plaintext query per candidate, and without ever learning the key.
