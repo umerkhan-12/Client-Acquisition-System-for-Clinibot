@@ -9,3 +9,9 @@ __pycache__/
 # each task actually ran, so re-include them.
 !results/*.log
 known_iv
+
+# Intermediates from building a downscaled copy of the report (used to test
+# whether the PDF could be emailed as an inline attachment - it could not).
+report/img_lite/
+report/report_lite.html
+report/*_compact.pdf
