@@ -125,6 +125,7 @@ docs/              audit, architecture, workflows, costs, deployment, compliance
 | [09 — Build order](docs/09-build-order.md) | Six phases, minimum viable system first |
 | [10 — Compliance](docs/10-compliance.md) | Per-market consent, deletion, AI disclosure |
 | [11 — Runbook](docs/11-runbook.md) | Daily checks and what to do when something breaks |
+| [12 — Getting your first client](docs/12-getting-your-first-client.md) | What to type, what only you can do, and what the funnel actually produces |
 | [13 — Website prospects](docs/13-website-prospects.md) | The WEB offer: find businesses without a good website, draft, send by hand |
 
 ## The rules, and how they are enforced
