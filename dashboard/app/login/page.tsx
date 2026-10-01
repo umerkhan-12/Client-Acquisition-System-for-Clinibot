@@ -77,7 +77,26 @@ async function verifyCode(formData: FormData): Promise<void> {
   redirect("/");
 }
 
+// Password sign-in, for when email delivery is the problem. Same allowlist,
+// same "no account creation" rule: the account must already exist in
+// Supabase with a password set by its owner.
+async function signInWithPassword(formData: FormData): Promise<void> {
+  "use server";
+
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  const password = String(formData.get("password") ?? "");
+  if (!email || !password) redirect("/login?mode=password&error=missing");
+  if (!allowlist().includes(email)) redirect("/login?mode=password&error=badpass");
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) redirect("/login?mode=password&error=badpass");
+
+  redirect("/");
+}
+
 const ERRORS: Record<string, string> = {
+  badpass: "Wrong email or password.",
   missing: "Enter your email address.",
   expired: "That took too long. Enter your email again to get a new code.",
   format: "The code is the number in the email, at least 6 digits.",
@@ -94,9 +113,10 @@ const button = { padding: ".6rem", border: 0, borderRadius: 6, cursor: "pointer"
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ step?: string; denied?: string; error?: string }>;
+  searchParams: Promise<{ step?: string; denied?: string; error?: string; mode?: string }>;
 }) {
   const params = await searchParams;
+  const passwordMode = params.mode === "password";
   const jar = await cookies();
   const pendingEmail = jar.get(EMAIL_COOKIE)?.value;
   const codeStep = params.step === "code" && !!pendingEmail;
@@ -122,7 +142,24 @@ export default async function LoginPage({
         </p>
       )}
 
-      {codeStep ? (
+      {passwordMode ? (
+        <>
+          <p style={{ color: "#888", fontSize: ".875rem", marginTop: 0 }}>
+            Sign in with your email and password.
+          </p>
+          <form action={signInWithPassword} style={{ display: "flex", flexDirection: "column", gap: ".6rem" }}>
+            <label htmlFor="email" style={{ fontSize: ".8rem", color: "#888" }}>Email</label>
+            <input id="email" name="email" type="email" required autoComplete="email" style={input} />
+            <label htmlFor="password" style={{ fontSize: ".8rem", color: "#888" }}>Password</label>
+            <input id="password" name="password" type="password" required
+                   autoComplete="current-password" style={input} />
+            <button type="submit" style={button}>Sign in</button>
+          </form>
+          <p style={{ fontSize: ".85rem", marginTop: ".9rem" }}>
+            <a href="/login" style={{ color: "#0f766e" }}>Use an emailed code instead</a>
+          </p>
+        </>
+      ) : codeStep ? (
         <>
           <p style={{ color: "#888", fontSize: ".875rem", marginTop: 0 }}>
             If {pendingEmail} is authorised, a sign-in code is on its way. Check spam too.
@@ -154,6 +191,9 @@ export default async function LoginPage({
             <input id="email" name="email" type="email" required autoComplete="email" style={input} />
             <button type="submit" style={button}>Email me a code</button>
           </form>
+          <p style={{ fontSize: ".85rem", marginTop: ".9rem" }}>
+            <a href="/login?mode=password" style={{ color: "#0f766e" }}>Sign in with a password</a>
+          </p>
         </>
       )}
     </main>
