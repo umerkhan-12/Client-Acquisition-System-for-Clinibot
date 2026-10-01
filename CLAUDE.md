@@ -63,7 +63,7 @@ weakening one, stop and raise it.
 
 ```bash
 ./scripts/bootstrap.sh acq_test          # migrations, prompts, 21 assertions, readiness
-node scripts/test_code_nodes.mjs         # 76 tests over the real Code-node JS
+node scripts/test_code_nodes.mjs         # 77 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
 python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 73 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests
@@ -194,7 +194,7 @@ fallback. See `docs/08-deployment.md`.
 
 Verified: 11 migrations on a clean database (and re-run idempotently), 9
 prompts, 21 behavioural assertions, 73 SQL statements type-checked (0 errors),
-76 Code-node tests, 15 workflows / 217 nodes, 19 deliverability self-tests,
+77 Code-node tests, 15 workflows / 217 nodes, 19 deliverability self-tests,
 dashboard `tsc` and `next build`.
 
 Not verified: anything needing credentials (Google Places, Gemini, SMTP, IMAP),

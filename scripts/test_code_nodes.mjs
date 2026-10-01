@@ -797,6 +797,17 @@ test("WEB Places results keep the task's category and carry the offer", () => {
   eq(out[0].json.website, null, "no website");
 });
 
+test("every Places Details response becomes a lead, not just the first", () => {
+  const place = (id, name) => ({ statusCode: 200, body: {
+    id, displayName: { text: name }, businessStatus: "OPERATIONAL", nationalPhoneNumber: "0300 1112223" } });
+  const out = runNode("10_lead_discovery", "Normalize Place Details", {
+    input: [place("A", "Alpha Prints"), place("B", "Beta Prints"),
+            { statusCode: 404, body: { error: {} } }, place("C", "Gamma Prints")],
+    nodes: { "Per Task": webTask },
+  });
+  eq(out.map((o) => o.json.source_ref), ["A", "B", "C"], "all three kept, the 404 skipped");
+});
+
 group("20 — offer-aware triage and decision");
 
 function triageLeads(leads) {

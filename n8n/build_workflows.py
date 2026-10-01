@@ -804,7 +804,11 @@ for (const el of elements) {
   if (out.length >= maxNew) break;
 }
 return out;
-""".strip())
+""".strip(), always_output=True,
+        notes="alwaysOutputData: an area that yields nothing (empty, or Overpass "
+              "answering 429) must still reach the loop's back edge. Without it the "
+              "loop stopped there, and the remaining claimed areas were skipped "
+              "for a full cadence. The empty item is refused harmlessly by upsert.")
 
     # ---------------- Google Places branch (paid) ----------------
     places_search = http(b, "Places Text Search", "POST",
@@ -863,19 +867,7 @@ FROM acq.filter_unknown_refs('PLACE_ID',
 
     places_norm = code(b, "Normalize Place Details", r"""
 const task = $('Per Task').first().json;
-const resp = $input.first().json;
-const p = resp.body ?? resp;
-
-if (!p || !p.id) return [];
-if (p.businessStatus && p.businessStatus !== 'OPERATIONAL') return [];
-
-const name = p.displayName?.text || '';
-if (!name) return [];
 const isWeb = task.offer === 'WEB';
-if (!isWeb && /\b(hospital|medical centre complex|trust)\b/i.test(name)) return [];
-
-const mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;
-const phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;
 
 function categorize(type, n) {
   const s = `${type || ''} ${n}`.toLowerCase();
@@ -889,6 +881,24 @@ function categorize(type, n) {
   if (/doctor|clinic|physician/.test(s))             return ['GENERAL_PRACTICE', 2];
   return ['OTHER', 3];
 }
+
+// One Details response per new place arrives here. Every one is read: this
+// once read only $input.first(), which kept a single business per search.
+const out = [];
+for (const item of $input.all()) {
+const resp = item.json;
+const p = resp.body ?? resp;
+
+if (!p || !p.id) continue;
+if (p.businessStatus && p.businessStatus !== 'OPERATIONAL') continue;
+
+const name = p.displayName?.text || '';
+if (!name) continue;
+if (!isWeb && /\b(hospital|medical centre complex|trust)\b/i.test(name)) continue;
+
+const mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;
+const phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;
+
 const [category, tier] = isWeb
   ? [task.category, task.priority_tier ?? 2]
   : categorize(p.primaryType, name);
@@ -900,7 +910,7 @@ if (phone) contacts.push({ contact_type: 'PHONE', value: phone,
 // Google Places does not expose email addresses. None is invented here; if the
 // clinic publishes one on its own site, workflow 30 reads it there with the
 // page URL recorded as evidence.
-return [{ json: {
+out.push({ json: {
   market_code: task.market_code,
   clinic_name: name,
   website: p.websiteUri || null,
@@ -925,8 +935,12 @@ return [{ json: {
     primaryType: p.primaryType ?? null,
     editorialSummary: p.editorialSummary?.text ?? null,
   }},
-}}];
-""".strip())
+}});
+}
+return out;
+""".strip(), always_output=True,
+        notes="alwaysOutputData, for the same reason as Normalize OSM Results: a "
+              "place that is filtered out must not end the loop.")
 
     upsert = pg(b, "Upsert Lead", "SELECT acq.upsert_lead_for_offer($1::jsonb) AS result",
                 replacement="={{ JSON.stringify($json) }}",
