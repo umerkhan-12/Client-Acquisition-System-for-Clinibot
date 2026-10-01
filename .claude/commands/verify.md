@@ -9,10 +9,10 @@ failure, because it is trusted.
 ## The suite
 
 ```bash
-./scripts/bootstrap.sh acq_test                  # migrations, prompts, 12 assertions, readiness
-node scripts/test_code_nodes.mjs                 # 57 tests over the real Code-node JS
+./scripts/bootstrap.sh acq_test                  # migrations, prompts, 21 assertions, readiness
+node scripts/test_code_nodes.mjs                 # 76 tests over the real Code-node JS
 python3 n8n/build_workflows.py                   # rebuild + structural validation
-python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 65 statements
+python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 73 statements
 ./scripts/check_deliverability.sh --self-test    # 19 self-tests
 (cd dashboard && npx tsc --noEmit)
 ```
@@ -54,6 +54,6 @@ skipped. Do not report it as passing.
 
 ## Report
 
-State the actual numbers — 9 migrations, 8 prompts, 12 assertions, 57 tests,
-13 workflows / 182 nodes, 65 statements, 19 self-tests — and name anything
+State the actual numbers — 11 migrations, 9 prompts, 21 assertions, 76 tests,
+15 workflows / 217 nodes, 73 statements, 19 self-tests — and name anything
 skipped. If everything passes, say so plainly without hedging.

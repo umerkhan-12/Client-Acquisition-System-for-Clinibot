@@ -117,6 +117,75 @@ export async function markDoNotContact(leadId: string) {
 }
 
 // ---------------------------------------------------------------------
+// Website outreach (the WEB offer, migration 011).
+//
+// These messages are sent by a person from their own phone, not by the
+// system. The dashboard records what happened through three SECURITY DEFINER
+// functions; acq_dashboard has no write access to the queue table itself, so
+// it cannot, for instance, change the number a message goes to.
+// ---------------------------------------------------------------------
+
+type SqlResult = { ok: boolean; error?: string };
+
+async function callJsonFn(sql: string, params: unknown[]): Promise<SqlResult> {
+  const { rows } = await pool.query<{ r: SqlResult }>(sql, params);
+  return rows[0]?.r ?? { ok: false, error: "no result" };
+}
+
+/** "I sent it." Stores the text actually sent and schedules the follow-up. */
+export async function markManualSent(outreachId: string, finalMessage: string) {
+  const { email } = await requireUserForAction();
+  const r = await callJsonFn(
+    `SELECT acq.mark_manual_sent($1::uuid, $2, $3) AS r`,
+    [outreachId, finalMessage, email],
+  );
+  revalidatePath("/outreach");
+  return r;
+}
+
+export async function skipManual(outreachId: string, reason: string) {
+  const { email } = await requireUserForAction();
+  const r = await callJsonFn(
+    `SELECT acq.skip_manual($1::uuid, $2, $3) AS r`,
+    [outreachId, reason, email],
+  );
+  revalidatePath("/outreach");
+  return r;
+}
+
+const OUTCOMES = ["REPLIED", "INTERESTED", "NOT_INTERESTED", "OPT_OUT", "CUSTOMER", "WRONG_NUMBER"] as const;
+
+/** Any outcome cancels the pending follow-up before anything else happens. */
+export async function recordManualOutcome(leadId: string, outcome: string) {
+  const { email } = await requireUserForAction();
+  if (!(OUTCOMES as readonly string[]).includes(outcome)) {
+    return { ok: false, error: "unknown outcome" };
+  }
+  const r = await callJsonFn(
+    `SELECT acq.record_manual_outcome($1::uuid, $2, $3) AS r`,
+    [leadId, outcome, email],
+  );
+  revalidatePath("/outreach");
+  return r;
+}
+
+export async function markManualSentForm(formData: FormData): Promise<void> {
+  const id = String(formData.get("outreachId") ?? "");
+  if (id) await markManualSent(id, String(formData.get("message") ?? ""));
+}
+
+export async function skipManualForm(formData: FormData): Promise<void> {
+  const id = String(formData.get("outreachId") ?? "");
+  if (id) await skipManual(id, String(formData.get("reason") ?? "skipped in dashboard"));
+}
+
+export async function recordManualOutcomeForm(formData: FormData): Promise<void> {
+  const id = String(formData.get("leadId") ?? "");
+  const outcome = String(formData.get("outcome") ?? "");
+  if (id && outcome) await recordManualOutcome(id, outcome);
+}
+
+// ---------------------------------------------------------------------
 // Form adapters.
 //
 // `<form action={...}>` requires a handler returning void, while the functions

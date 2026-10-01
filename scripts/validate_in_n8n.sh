@@ -40,32 +40,42 @@ JSON
 "$N8N_BIN" import:credentials --input="$CRED" 2>&1 | quiet | tail -2
 rm -f "$CRED"
 
-# The CLI cannot start a workflow from a Schedule Trigger, so run a copy whose
+# The CLI cannot start a workflow from a Schedule Trigger, so run copies whose
 # trigger is swapped. Every other node, query and expression is untouched.
-echo "==> executing workflow 20 against $DB"
+#
+# 20 qualifies whatever NEW leads exist. 25 and 45 (the WEB offer) run too:
+# against a database with nothing for them to claim, which is their most
+# common state in production, and is exactly where the empty-claim gate has
+# to hold. 45 calls the AI sub-workflow only when it has a lead.
+RUN_WFS="${RUN_WFS:-20_lead_qualification 25_website_audit 45_web_pitch}"
 TMPDIR_WF="$(mktemp -d)"
-python3 - "$ROOT" "$TMPDIR_WF" <<'PY'
+python3 - "$ROOT" "$TMPDIR_WF" $RUN_WFS <<'PY'
 import json, pathlib, sys
-root, out = sys.argv[1], sys.argv[2]
-d = json.loads((pathlib.Path(root) / "n8n/workflows/20_lead_qualification.json").read_text())
-for n in d["nodes"]:
-    if n["type"] == "n8n-nodes-base.scheduleTrigger":
-        n["type"] = "n8n-nodes-base.executeWorkflowTrigger"
-        n["typeVersion"] = 1.1
-        n["parameters"] = {"inputSource": "passthrough"}
-d["name"] = "VALIDATION RUN — ACQ 20"
-d.pop("meta", None)
-(pathlib.Path(out) / "wf20.json").write_text(json.dumps(d, indent=2))
+root, out, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+for name in names:
+    src = pathlib.Path(root) / "n8n" / "workflows" / f"{name}.json"
+    d = json.loads(src.read_text(encoding="utf-8"))
+    for n in d["nodes"]:
+        if n["type"] == "n8n-nodes-base.scheduleTrigger":
+            n["type"] = "n8n-nodes-base.executeWorkflowTrigger"
+            n["typeVersion"] = 1.1
+            n["parameters"] = {"inputSource": "passthrough"}
+    d["name"] = f"VALIDATION RUN {name}"
+    d.pop("meta", None)
+    (pathlib.Path(out) / f"{name}.json").write_text(json.dumps(d, indent=2), encoding="utf-8")
 PY
 "$N8N_BIN" import:workflow --separate --input="$TMPDIR_WF" 2>&1 | quiet | tail -2
-WF_ID="$("$N8N_BIN" list:workflow 2>/dev/null | grep 'VALIDATION RUN' | cut -d'|' -f1 | head -1)"
-[ -n "$WF_ID" ] || { echo "could not find the validation workflow" >&2; exit 1; }
-
-STATUS="$("$N8N_BIN" execute --id "$WF_ID" 2>&1 | grep -oE '"status": "[a-z]+"' | tail -1)"
 rm -rf "$TMPDIR_WF"
 
-echo "==> result: $STATUS"
-case "$STATUS" in
-  *success*) echo "n8n imported all workflows and executed one successfully." ;;
-  *)         echo "FAILED: $STATUS" >&2; exit 1 ;;
-esac
+FAILED=0
+for name in $RUN_WFS; do
+  WF_ID="$("$N8N_BIN" list:workflow 2>/dev/null | grep "VALIDATION RUN $name" | cut -d'|' -f1 | head -1)"
+  if [ -z "$WF_ID" ]; then echo "could not find the validation copy of $name" >&2; FAILED=1; continue; fi
+  echo "==> executing $name against $DB"
+  STATUS="$("$N8N_BIN" execute --id "$WF_ID" 2>&1 | grep -oE '"status": "[a-z]+"' | tail -1)"
+  echo "    result: $STATUS"
+  case "$STATUS" in *success*) ;; *) FAILED=1 ;; esac
+done
+
+if [ "$FAILED" -ne 0 ]; then echo "FAILED: at least one execution did not succeed" >&2; exit 1; fi
+echo "n8n imported all workflows and executed: $RUN_WFS"

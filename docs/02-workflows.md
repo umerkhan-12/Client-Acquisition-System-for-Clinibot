@@ -19,8 +19,10 @@ placeholders you replace once on import.
 - [ACQ 01 — AI Call](#acq-01-ai-call) — `01_ai_call.json`
 - [ACQ 10 — Lead Discovery](#acq-10-lead-discovery) — `10_lead_discovery.json`
 - [ACQ 20 — Lead Qualification](#acq-20-lead-qualification) — `20_lead_qualification.json`
+- [ACQ 25 — Website Audit](#acq-25-website-audit) — `25_website_audit.json`
 - [ACQ 30 — AI Research](#acq-30-ai-research) — `30_ai_research.json`
 - [ACQ 40 — Personalization](#acq-40-personalization) — `40_personalization.json`
+- [ACQ 45 — Web Pitch Drafts](#acq-45-web-pitch-drafts) — `45_web_pitch.json`
 - [ACQ 50 — Outreach Send](#acq-50-outreach-send) — `50_outreach_send.json`
 - [ACQ 60 — Inbox Monitor](#acq-60-inbox-monitor) — `60_inbox_monitor.json`
 - [ACQ 70 — Reply Classification](#acq-70-reply-classification) — `70_reply_classification.json`
@@ -107,7 +109,7 @@ Gemini's `responseSchema` only accepts a subset of JSON Schema, so unsupported k
 
 ## ACQ 10 — Lead Discovery
 
-**File** `n8n/workflows/10_lead_discovery.json` · **18 nodes**
+**File** `n8n/workflows/10_lead_discovery.json` · **19 nodes**
 
 The ordering is the whole point. Text Search returns place IDs cheaply; **Place Details is the billed call**, and it runs only for businesses that survived `acq.filter_unknown_refs`. After the first pass most search results are already in the CRM, so this ordering is the difference between paying once per clinic and paying every month.
 
@@ -134,9 +136,10 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 | 13 | Drop Already-Known Places | Postgres | `SELECT ref` |
 | 14 | Place Details (new only) | HTTP | `GET =https://places.googleapis.com/v1/places/…` |
 | 15 | Normalize Place Details | Code |  |
-| 16 | Upsert Lead | Postgres | `SELECT acq.upsert_lead($1::jsonb) AS result` |
+| 16 | Upsert Lead | Postgres | `SELECT acq.upsert_lead_for_offer($1::jsonb) AS result` |
 | 17 | Pause Between Areas | Wait | 4 seconds |
 | 18 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
+| 19 | Anything Claimed? | IF |  |
 
 **Database operations**
 
@@ -144,7 +147,7 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 - **Log Budget Halt** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at`<br>Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd to resume.
 - **Claim Discovery Tasks** — `SELECT id, city, area, query_term, category, provider, priority_tier, bbox,`<br>next_discovery_tasks() claims and reschedules atomically, so two overlapping runs never process the same area twice.
 - **Drop Already-Known Places** — `SELECT ref`<br>THE cost lever. Place Details is billed per call; this removes every business already in the CRM before a single Details request is made.
-- **Upsert Lead** — `SELECT acq.upsert_lead($1::jsonb) AS result`<br>One entry point for every source. Deduplication, provenance checking and contact recording all happen inside this call.
+- **Upsert Lead** — `SELECT acq.upsert_lead_for_offer($1::jsonb) AS result`<br>One entry point for every source. Deduplication, provenance checking, contact recording and the offer tag all happen inside this call.
 - **Record Run** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, `
 
 **Error handling** — retries on: `Check Budget + Settings`, `Log Budget Halt`, `Claim Discovery Tasks`, `Overpass API`, `Places Text Search`, `Drop Already-Known Places`, `Place Details (new only)`, `Upsert Lead`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
@@ -153,7 +156,7 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 
 ## ACQ 20 — Lead Qualification
 
-**File** `n8n/workflows/20_lead_qualification.json` · **7 nodes**
+**File** `n8n/workflows/20_lead_qualification.json` · **8 nodes**
 
 Zero AI calls, by design. This is section 19's "deterministic logic first": most leads are rejected here for reasons that need no model and no network request — no contact channel, a hospital, a pharmacy, a score below threshold.
 
@@ -167,26 +170,68 @@ A lead that qualifies but has no website goes to `READY_FOR_REVIEW` rather than 
 |---|---|---|---|
 | 1 | Every 30 Minutes | Schedule trigger | cron `*/30 * * * *` |
 | 2 | Claim New Leads | Postgres | `SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,` |
-| 3 | Deterministic Triage | Code |  |
-| 4 | Score (Deterministic) | Postgres | `SELECT acq.compute_score($1::uuid, 'DETERMINISTIC') AS score` |
-| 5 | Decide Next Status | Code |  |
-| 6 | Apply Status | Postgres | `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'SYSTEM', $4) AS` |
-| 7 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
+| 3 | Route Offer | Postgres | `SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,` |
+| 4 | Deterministic Triage | Code |  |
+| 5 | Score (Deterministic) | Postgres | `SELECT acq.compute_score($1::uuid, 'DETERMINISTIC') AS score` |
+| 6 | Decide Next Status | Code |  |
+| 7 | Apply Status | Postgres | `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'SYSTEM', $4) AS` |
+| 8 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
 
 **Database operations**
 
 - **Claim New Leads** — `SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,`<br>FOR UPDATE SKIP LOCKED inside claim_leads means overlapping runs take disjoint work instead of colliding.
+- **Route Offer** — `SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,`<br>One row in, one row out, so the index alignment the nodes below rely on still holds.
 - **Score (Deterministic)** — `SELECT acq.compute_score($1::uuid, 'DETERMINISTIC') AS score`
 - **Apply Status** — `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'SYSTEM', $4) AS`
 - **Record Run** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, `
 
-**Error handling** — retries on: `Claim New Leads`, `Score (Deterministic)`, `Apply Status`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+**Error handling** — retries on: `Claim New Leads`, `Route Offer`, `Score (Deterministic)`, `Apply Status`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+
+---
+
+## ACQ 25 — Website Audit
+
+**File** `n8n/workflows/25_website_audit.json` · **17 nodes**
+
+
+
+**Trigger** — Schedule trigger (cron `*/30 6-16 * * 1-6`)
+
+**Credentials** — `acq-postgres`
+
+| # | Node | Type | Detail |
+|---|---|---|---|
+| 1 | Every 30 Minutes (Daytime) | Schedule trigger | cron `*/30 6-16 * * 1-6` |
+| 2 | Load Crawl Settings | Postgres | `SELECT (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.crawl_u` |
+| 3 | Claim Websites To Audit | Postgres | `SELECT id, clinic_name, website, domain, category` |
+| 4 | Anything Claimed? | IF |  |
+| 5 | Nothing To Audit | No-op |  |
+| 6 | Per Lead | Loop | batch size 1 |
+| 7 | Plan Audit | Code |  |
+| 8 | Fetch robots.txt | HTTP | `GET =…` |
+| 9 | Apply robots.txt | Code |  |
+| 10 | Homepage Allowed? | IF |  |
+| 11 | Start Timer | Code |  |
+| 12 | Fetch Homepage | HTTP | `GET =…` |
+| 13 | Analyze Website | Code |  |
+| 14 | Robots Blocked | Code |  |
+| 15 | Record Audit | Postgres | `SELECT acq.record_website_audit($1::jsonb) AS result` |
+| 16 | Pace Requests | Wait | 3 seconds |
+| 17 | Audit Sweep Complete | No-op |  |
+
+**Database operations**
+
+- **Load Crawl Settings** — `SELECT (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.crawl_u`
+- **Claim Websites To Audit** — `SELECT id, clinic_name, website, domain, category`
+- **Record Audit** — `SELECT acq.record_website_audit($1::jsonb) AS result`<br>Stores the audit, keeps any email found with its page as evidence, rescores (BLENDED) and either keeps the lead QUALIFIED or rejects it — one transaction.
+
+**Error handling** — retries on: `Load Crawl Settings`, `Claim Websites To Audit`, `Fetch robots.txt`, `Fetch Homepage`, `Record Audit`. continues past failure at: `Fetch robots.txt`, `Fetch Homepage`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
 
 ---
 
 ## ACQ 30 — AI Research
 
-**File** `n8n/workflows/30_ai_research.json` · **25 nodes**
+**File** `n8n/workflows/30_ai_research.json` · **27 nodes**
 
 The only workflow that reads clinic websites, and the only place a hallucination can enter the pipeline.
 
@@ -228,7 +273,9 @@ Research is followed by a separate **qualification pass** (`score_lead`). Extrac
 | 22 | Score (Blended) | Postgres | `SELECT acq.compute_score($1::uuid, 'BLENDED') AS score` |
 | 23 | Apply Status | Postgres | `SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS res` |
 | 24 | Pace Requests | Wait | 3 seconds |
-| 25 | Research Sweep Complete | No-op |  |
+| 25 | Anything Claimed? | IF |  |
+| 26 | Nothing To Research | No-op |  |
+| 27 | Research Sweep Complete | No-op |  |
 
 **Database operations**
 
@@ -246,7 +293,7 @@ Research is followed by a separate **qualification pass** (`score_lead`). Extrac
 
 ## ACQ 40 — Personalization
 
-**File** `n8n/workflows/40_personalization.json` · **21 nodes**
+**File** `n8n/workflows/40_personalization.json` · **22 nodes**
 
 Two things stand between the model and a real clinic's inbox.
 
@@ -281,6 +328,7 @@ Then the **guardrails** — a deterministic pass the prompt cannot talk its way 
 | 19 | Awaiting Approval | No-op |  |
 | 20 | Queued For Sending | No-op |  |
 | 21 | Batch Complete | No-op |  |
+| 22 | Anything Claimed? | IF |  |
 
 **Database operations**
 
@@ -297,9 +345,44 @@ Then the **guardrails** — a deterministic pass the prompt cannot talk its way 
 
 ---
 
+## ACQ 45 — Web Pitch Drafts
+
+**File** `n8n/workflows/45_web_pitch.json` · **11 nodes**
+
+
+
+**Trigger** — Schedule trigger (cron `*/30 9-18 * * 1-6`)
+
+**Credentials** — `acq-postgres`
+
+| # | Node | Type | Detail |
+|---|---|---|---|
+| 1 | Every 30 Minutes (Business Hours) | Schedule trigger | cron `*/30 9-18 * * 1-6` |
+| 2 | Load Settings | Postgres | `SELECT` |
+| 3 | Claim Leads To Pitch | Postgres | `SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.lead_scor` |
+| 4 | Anything Claimed? | IF |  |
+| 5 | Nothing To Draft | No-op |  |
+| 6 | Per Lead | Loop | batch size 1 |
+| 7 | Build AI Input | Code |  |
+| 8 | AI: Draft Pitch | Call workflow | → ACQ 01 — AI Call |
+| 9 | Check Draft | Code |  |
+| 10 | Record Draft | Postgres | `SELECT acq.record_web_pitch($1::jsonb) AS result` |
+| 11 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
+
+**Database operations**
+
+- **Load Settings** — `SELECT`
+- **Claim Leads To Pitch** — `SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.lead_scor`
+- **Record Draft** — `SELECT acq.record_web_pitch($1::jsonb) AS result`<br>Inserts the queue row (or the template, if the draft was dropped) and moves the lead to READY_FOR_REVIEW. Idempotent per lead.
+- **Record Run** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, `
+
+**Error handling** — retries on: `Load Settings`, `Claim Leads To Pitch`, `Record Draft`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+
+---
+
 ## ACQ 50 — Outreach Send
 
-**File** `n8n/workflows/50_outreach_send.json` · **16 nodes**
+**File** `n8n/workflows/50_outreach_send.json` · **17 nodes**
 
 The only workflow permitted to talk to SMTP. Initial emails and follow-ups both arrive as rows in `acq.emails`, so the daily cap applies to the operation as a whole rather than separately to each.
 
@@ -329,6 +412,7 @@ Sends are spaced 40-160 seconds apart at random. A perfectly regular cadence loo
 | 14 | Human Pacing Delay | Code |  |
 | 15 | Wait (Jittered) | Wait | ={{ $json.wait_seconds }} seconds |
 | 16 | Send Batch Complete | No-op |  |
+| 17 | Anything Claimed? | IF |  |
 
 **Database operations**
 
@@ -436,7 +520,7 @@ An interested prospect who also asks something a human must answer is still rout
 
 ## ACQ 80 — Follow-up Engine
 
-**File** `n8n/workflows/80_followup_engine.json` · **10 nodes**
+**File** `n8n/workflows/80_followup_engine.json` · **11 nodes**
 
 Generates follow-ups; never sends them. It writes rows into `acq.emails` and workflow 50 does the sending, which is what keeps one choke point for all outbound mail.
 
@@ -458,6 +542,7 @@ Generates follow-ups; never sends them. It writes rows into `acq.emails` and wor
 | 8 | Queue Follow-Up Email | Postgres | `INSERT INTO acq.emails (lead_id, campaign_id, mailbox_id, step_no, to_email,` |
 | 9 | Skip This Follow-Up | Postgres | `WITH s AS (` |
 | 10 | Follow-Up Sweep Complete | No-op |  |
+| 11 | Anything Claimed? | IF |  |
 
 **Database operations**
 

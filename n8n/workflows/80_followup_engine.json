@@ -212,6 +212,42 @@
         2240,
         300
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.lead_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf80-10",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2460,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
     }
   ],
   "connections": {
@@ -230,7 +266,25 @@
       "main": [
         [
           {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
             "node": "Per Follow-Up",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Follow-Up Sweep Complete",
             "type": "main",
             "index": 0
           }

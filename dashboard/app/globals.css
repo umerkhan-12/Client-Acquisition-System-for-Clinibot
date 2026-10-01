@@ -102,3 +102,20 @@ button:hover { filter: brightness(1.08); }
 .warnbar { background: var(--panel); border: 1px solid var(--warn);
            border-left-width: 3px; border-radius: 8px; padding: .65rem .9rem;
            margin-bottom: .6rem; font-size: .87rem; color: var(--warn); }
+
+/* Website outreach (/outreach) */
+a { color: var(--accent); }
+.hint { color: var(--muted); font-size: .86rem; margin: -.35rem 0 .75rem; max-width: 70ch; }
+.muted { color: var(--muted); }
+textarea.msg { width: 100%; font: .9rem/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+               color: var(--text); background: var(--bg); border: 1px solid var(--border);
+               border-radius: 8px; padding: .65rem .8rem; margin: 0 0 .7rem; resize: vertical; }
+textarea.msg:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.actions.wrap { flex-wrap: wrap; align-items: center; }
+.actions .spacer { flex: 1 1 auto; }
+.num-label { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .84rem; white-space: nowrap; }
+a.btn { display: inline-block; text-decoration: none; font-size: .84rem; font-weight: 550;
+        border-radius: 7px; padding: .38rem .85rem; border: 1px solid var(--border);
+        background: var(--panel); color: var(--text); }
+a.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+a.btn:hover { filter: brightness(1.08); }

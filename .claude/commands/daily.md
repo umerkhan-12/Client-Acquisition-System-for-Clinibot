@@ -28,6 +28,18 @@ ORDER BY rc.created_at DESC
 LIMIT 20;
 ```
 
+**Website outreach (WEB offer).** Messages are sent by hand from the
+dashboard's `/outreach` page, so the queue only moves if a person works it.
+
+```sql
+SELECT * FROM acq.v_web_overview;
+
+-- follow-ups due today
+SELECT business_name, step_no, channel, due_at
+FROM acq.v_manual_outreach WHERE queue = 'TO_SEND' AND step_no > 0
+ORDER BY due_at;
+```
+
 ## 2. Deliverability
 
 ```sql

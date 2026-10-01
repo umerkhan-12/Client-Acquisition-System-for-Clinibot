@@ -52,15 +52,44 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// Rejections that need no model call and no network request. Anything decided\n// here costs nothing, which is the whole point of running it before workflow 30.\nconst out = [];\nfor (const item of $input.all()) {\n  const l = item.json;\n  const reasons = [];\n\n  const hasEmail = !!l.public_email;\n  const hasPhone = !!l.phone;\n  const hasWhatsapp = !!l.whatsapp;\n  const hasWebsite = !!l.website;\n\n  if (!hasEmail && !hasPhone && !hasWhatsapp) reasons.push('no_contact_channel');\n  if (!hasWebsite && !hasEmail) reasons.push('nothing_to_research');\n  if (/\\b(hospital|trust|foundation|government|govt|welfare|charitable|medical college)\\b/i\n        .test(l.clinic_name || '')) reasons.push('large_institution');\n  if ((l.clinic_name || '').trim().length < 3) reasons.push('unusable_name');\n  if (/\\b(pharmacy|medical store|chemist|drug store)\\b/i.test(l.clinic_name || ''))\n    reasons.push('not_appointment_based');\n\n  out.push({ json: {\n    ...l,\n    disqualified: reasons.length > 0,\n    disqualify_reasons: reasons,\n    // Only leads with a research surface are worth an AI call.\n    researchable: hasWebsite,\n  }});\n}\nreturn out;"
+        "operation": "executeQuery",
+        "query": "-- A clinic with no website and no public email cannot be a Clinibot prospect,\n-- but it is exactly a website prospect. The decision is SQL (migration 011),\n-- and this returns the lead as it now stands, offer included.\nSELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,\n       category, priority_tier, source, domain, offer\nFROM acq.route_offer(NULLIF($1, '')::uuid)",
+        "options": {
+          "queryReplacement": "={{ [ $json.id || '' ] }}"
+        }
       },
       "id": "wf20-02",
+      "name": "Route Offer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "notes": "One row in, one row out, so the index alignment the nodes below rely on still holds.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Rejections that need no model call and no network request. Anything decided\n// here costs nothing, which is the whole point of running it before workflow 30.\nconst out = [];\nfor (const item of $input.all()) {\n  const l = item.json;\n  const reasons = [];\n  const isWeb = l.offer === 'WEB';\n\n  const hasEmail = !!l.public_email;\n  const hasPhone = !!l.phone;\n  const hasWhatsapp = !!l.whatsapp;\n  const hasWebsite = !!l.website;\n\n  if (!hasEmail && !hasPhone && !hasWhatsapp) reasons.push('no_contact_channel');\n  if ((l.clinic_name || '').trim().length < 3) reasons.push('unusable_name');\n\n  if (isWeb) {\n    // A website pitch is sent by hand over WhatsApp or phone; with no number\n    // there is no way to make it.\n    if (!hasPhone && !hasWhatsapp && hasEmail) reasons.push('no_phone_for_manual_outreach');\n    if (/\\b(hospital|government|govt|university|bank)\\b/i.test(l.clinic_name || ''))\n      reasons.push('large_institution');\n  } else {\n    if (!hasWebsite && !hasEmail) reasons.push('nothing_to_research');\n    if (/\\b(hospital|trust|foundation|government|govt|welfare|charitable|medical college)\\b/i\n          .test(l.clinic_name || '')) reasons.push('large_institution');\n    if (/\\b(pharmacy|medical store|chemist|drug store)\\b/i.test(l.clinic_name || ''))\n      reasons.push('not_appointment_based');\n  }\n\n  out.push({ json: {\n    ...l,\n    disqualified: reasons.length > 0,\n    disqualify_reasons: reasons,\n    // Only Clinibot leads with a research surface are worth an AI call.\n    researchable: !isWeb && hasWebsite,\n  }});\n}\nreturn out;"
+      },
+      "id": "wf20-03",
       "name": "Deterministic Triage",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        700,
+        920,
         300
       ]
     },
@@ -72,12 +101,12 @@
           "queryReplacement": "={{ [ $json.id ] }}"
         }
       },
-      "id": "wf20-03",
+      "id": "wf20-04",
       "name": "Score (Deterministic)",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        920,
+        1140,
         300
       ],
       "credentials": {
@@ -93,14 +122,14 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Pairs each scoring result back with its triage item. The Postgres node emits\n// one output row per input item in the same order, so index alignment holds.\nconst triaged = $('Deterministic Triage').all();\nconst out = [];\n\n$input.all().forEach((item, i) => {\n  const lead = triaged[i].json;\n  const s = item.json.score || {};\n  const score = s.score ?? 0;\n  const qualifies = s.qualifies === true;\n\n  let status, reason;\n  if (lead.disqualified) {\n    status = lead.disqualify_reasons.includes('no_contact_channel') ? 'INVALID' : 'REJECTED';\n    reason = lead.disqualify_reasons.join(',');\n  } else if (!qualifies) {\n    status = 'REJECTED';\n    reason = `score_below_threshold:${score}`;\n  } else if (!lead.researchable) {\n    // Qualifies on paper but there is nothing public to write a personal email\n    // from. A human can decide; the system will not send something generic.\n    status = 'READY_FOR_REVIEW';\n    reason = 'qualified_but_no_website_to_research';\n  } else {\n    status = 'QUALIFIED';\n    reason = `score:${score}`;\n  }\n\n  out.push({ json: { lead_id: lead.id, clinic_name: lead.clinic_name,\n                     score, status, reason } });\n});\nreturn out;"
+        "jsCode": "// Pairs each scoring result back with its triage item. The Postgres node emits\n// one output row per input item in the same order, so index alignment holds.\nconst triaged = $('Deterministic Triage').all();\nconst out = [];\n\n$input.all().forEach((item, i) => {\n  const lead = triaged[i].json;\n  const s = item.json.score || {};\n  const score = s.score ?? 0;\n  const qualifies = s.qualifies === true;\n\n  let status, reason;\n  if (lead.disqualified) {\n    status = lead.disqualify_reasons.includes('no_contact_channel') ? 'INVALID' : 'REJECTED';\n    reason = lead.disqualify_reasons.join(',');\n  } else if (!qualifies) {\n    status = 'REJECTED';\n    reason = `score_below_threshold:${score}`;\n  } else if (lead.offer === 'WEB') {\n    // No website: straight to workflow 45 for a drafted pitch. A website:\n    // workflow 25 audits it first, and only a weak one gets pitched.\n    status = 'QUALIFIED';\n    reason = (s.breakdown && 'no_website' in s.breakdown)\n      ? `web:no_website:${score}` : `web:website_to_audit:${score}`;\n  } else if (!lead.researchable) {\n    // Qualifies on paper but there is nothing public to write a personal email\n    // from. A human can decide; the system will not send something generic.\n    status = 'READY_FOR_REVIEW';\n    reason = 'qualified_but_no_website_to_research';\n  } else {\n    status = 'QUALIFIED';\n    reason = `score:${score}`;\n  }\n\n  out.push({ json: { lead_id: lead.id, clinic_name: lead.clinic_name,\n                     score, status, reason } });\n});\nreturn out;"
       },
-      "id": "wf20-04",
+      "id": "wf20-05",
       "name": "Decide Next Status",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1140,
+        1360,
         300
       ]
     },
@@ -112,12 +141,12 @@
           "queryReplacement": "={{ [ $json.lead_id, $json.status, $json.reason, $execution.id ] }}"
         }
       },
-      "id": "wf20-05",
+      "id": "wf20-06",
       "name": "Apply Status",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1360,
+        1580,
         300
       ],
       "credentials": {
@@ -138,12 +167,12 @@
           "queryReplacement": "={{ [ $execution.id, $input.all().length ] }}"
         }
       },
-      "id": "wf20-06",
+      "id": "wf20-07",
       "name": "Record Run",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1580,
+        1800,
         300
       ],
       "credentials": {
@@ -171,6 +200,17 @@
       ]
     },
     "Claim New Leads": {
+      "main": [
+        [
+          {
+            "node": "Route Offer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Offer": {
       "main": [
         [
           {

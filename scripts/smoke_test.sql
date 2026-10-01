@@ -417,6 +417,200 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 11. WEB offer: routing, scoring, and the Clinibot claimers ===='
+
+-- A clinic with nothing to research and no address to email cannot be a
+-- Clinibot prospect. Workflow 20 used to reject it; now it becomes a website
+-- prospect. A clinic WITH a website must stay exactly where it was.
+INSERT INTO acq.leads (market_id, clinic_name, city, area, category, priority_tier,
+                       website, phone, source, source_url, status, raw)
+SELECT m.id, v.name, 'Karachi', 'Saddar', v.cat, 1, v.site, v.phone,
+       'TEST', 'https://maps.example/' || v.name, 'NEW',
+       '{"GOOGLE_PLACES":{"userRatingCount":40,"rating":4.4}}'::jsonb
+FROM acq.markets m,
+     (VALUES ('Web Test No Site',     'DENTAL',   NULL,                            '03001110001'),
+             ('Web Test Facebook',    'DENTAL',   'https://facebook.com/webtest',  '02135550002'),
+             ('Web Test Has Site',    'DENTAL',   'https://webtest-has-site.pk',   '03001110003')
+     ) AS v(name, cat, site, phone)
+WHERE m.code = 'PK';
+
+DO $$
+DECLARE o text; s jsonb; lead uuid; n int;
+BEGIN
+  SELECT offer INTO o FROM acq.route_offer((SELECT id FROM acq.leads WHERE clinic_name = 'Web Test No Site'));
+  IF o <> 'WEB' THEN RAISE EXCEPTION 'FAIL: clinic with no website was not rerouted (offer %)', o; END IF;
+
+  SELECT offer INTO o FROM acq.route_offer((SELECT id FROM acq.leads WHERE clinic_name = 'Web Test Facebook'));
+  IF o <> 'WEB' THEN RAISE EXCEPTION 'FAIL: a Facebook page counted as a website (offer %)', o; END IF;
+
+  SELECT offer INTO o FROM acq.route_offer((SELECT id FROM acq.leads WHERE clinic_name = 'Web Test Has Site'));
+  IF o <> 'CLINIBOT' THEN RAISE EXCEPTION 'FAIL: clinic with a website left Clinibot (offer %)', o; END IF;
+  RAISE NOTICE 'PASS: no-website clinics reroute to WEB, one with a site stays CLINIBOT';
+
+  -- No website: the deterministic score is final, so the selective gate applies.
+  s := acq.compute_score((SELECT id FROM acq.leads WHERE clinic_name = 'Web Test No Site'), 'DETERMINISTIC');
+  IF s->>'gate_key' <> 'qualify' OR NOT (s->>'qualifies')::boolean OR NOT (s->'breakdown' ? 'no_website') THEN
+    RAISE EXCEPTION 'FAIL: WEB no-website scoring: %', s - 'thresholds';
+  END IF;
+  RAISE NOTICE 'PASS: busy listing with no website scores % against the final gate %', s->>'score', s->>'gate';
+
+  -- A WEB lead that has a website is QUALIFIED with a website: exactly what
+  -- workflow 30 looks for. The offer must keep it out.
+  UPDATE acq.leads SET offer = 'WEB', status = 'QUALIFIED', lead_score = 99
+   WHERE clinic_name = 'Web Test Has Site';
+  SELECT count(*) INTO n FROM acq.claim_leads_for_research(50, 'smoke-wf30-web')
+   WHERE offer = 'WEB';
+  IF n > 0 THEN RAISE EXCEPTION 'FAIL: the Clinibot research claim took % WEB lead(s)', n; END IF;
+  RAISE NOTICE 'PASS: Clinibot claimers never lock a WEB lead';
+END $$;
+
+\echo ''
+\echo '=== 12. Website audit decides in SQL; found email keeps provenance ='
+
+INSERT INTO acq.leads (market_id, clinic_name, city, category, priority_tier, offer,
+                       website, phone, source, source_url, status)
+SELECT m.id, v.name, 'Karachi', 'PRINTING', 1, 'WEB', v.site, v.phone,
+       'TEST', 'https://maps.example/' || v.name, 'QUALIFIED'
+FROM acq.markets m,
+     (VALUES ('Audit Weak Site', 'http://weak-printers.pk',  '03002220001'),
+             ('Audit Good Site', 'https://good-printers.pk', '03002220002')) AS v(name, site, phone)
+WHERE m.code = 'PK';
+
+DO $$
+DECLARE r jsonb; n int; st acq.lead_status; em text; src acq.contact_source;
+BEGIN
+  SELECT count(*) INTO n FROM acq.claim_leads_for_audit(10, 'smoke-wf25')
+   WHERE clinic_name IN ('Audit Weak Site', 'Audit Good Site');
+  IF n <> 2 THEN RAISE EXCEPTION 'FAIL: expected both sites claimed for audit, got %', n; END IF;
+
+  r := acq.record_website_audit(jsonb_build_object(
+         'lead_id', (SELECT id FROM acq.leads WHERE clinic_name = 'Audit Weak Site'),
+         'url', 'http://weak-printers.pk', 'robots_allowed', true, 'reachable', true,
+         'status_code', 200, 'https', false, 'has_viewport', false,
+         'issues', '["no_https","not_mobile_friendly","outdated"]'::jsonb,
+         'email', 'Orders@Weak-Printers.pk', 'email_url', 'http://weak-printers.pk/'));
+  SELECT status, public_email, email_source INTO st, em, src
+    FROM acq.leads WHERE clinic_name = 'Audit Weak Site';
+  IF NOT (r->>'qualifies')::boolean OR st <> 'QUALIFIED' THEN
+    RAISE EXCEPTION 'FAIL: a weak site should stay pitchable: % / %', st, r;
+  END IF;
+  IF em <> 'orders@weak-printers.pk' OR src <> 'CLINIC_WEBSITE' THEN
+    RAISE EXCEPTION 'FAIL: email found on the site not stored with provenance (% / %)', em, src;
+  END IF;
+
+  r := acq.record_website_audit(jsonb_build_object(
+         'lead_id', (SELECT id FROM acq.leads WHERE clinic_name = 'Audit Good Site'),
+         'url', 'https://good-printers.pk', 'robots_allowed', true, 'reachable', true,
+         'status_code', 200, 'https', true, 'has_viewport', true, 'issues', '[]'::jsonb));
+  SELECT status INTO st FROM acq.leads WHERE clinic_name = 'Audit Good Site';
+  IF st <> 'REJECTED' THEN RAISE EXCEPTION 'FAIL: a good site should be rejected, is %', st; END IF;
+  RAISE NOTICE 'PASS: weak site stays QUALIFIED with its email; good site REJECTED';
+END $$;
+
+\echo ''
+\echo '=== 13. Web pitch: daily cap, channel, fallback, follow-up ========'
+
+INSERT INTO acq.leads (market_id, clinic_name, city, area, category, priority_tier, offer,
+                       phone, source, source_url, status, lead_score)
+SELECT m.id, 'Pitch Test ' || g, 'Karachi', 'Saddar', 'SALON', 1, 'WEB',
+       CASE WHEN g = 4 THEN '02133330004' ELSE '0300333000' || g END,
+       'TEST', 'https://maps.example/pitch' || g, 'QUALIFIED', 90 - g
+FROM acq.markets m, generate_series(1, 4) g WHERE m.code = 'PK';
+
+UPDATE acq.settings SET value = '2'::jsonb WHERE key = 'web.max_drafts_per_day';
+-- Earlier sections left other WEB leads QUALIFIED; park them so the cap test
+-- counts only these four.
+UPDATE acq.leads SET status = 'REJECTED' WHERE offer = 'WEB' AND clinic_name NOT LIKE 'Pitch Test %';
+
+DO $$
+DECLARE n int; r jsonb; m acq.manual_outreach%ROWTYPE; st acq.lead_status;
+        l4 uuid; l1 uuid;
+BEGIN
+  SELECT count(*) INTO n FROM acq.claim_leads_for_web_pitch(10, 'wf45:smoke-a');
+  IF n <> 2 THEN RAISE EXCEPTION 'FAIL: daily cap 2 but first claim took %', n; END IF;
+  -- claimed-but-undrafted leads count against the cap, so an overlapping run gets nothing
+  SELECT count(*) INTO n FROM acq.claim_leads_for_web_pitch(10, 'wf45:smoke-b');
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL: overlapping run exceeded the cap by %', n; END IF;
+  RAISE NOTICE 'PASS: daily draft cap holds across overlapping runs';
+
+  SELECT id INTO l1 FROM acq.leads WHERE clinic_name = 'Pitch Test 1';
+  SELECT id INTO l4 FROM acq.leads WHERE clinic_name = 'Pitch Test 4';
+
+  -- No AI message: the template is used, so a model outage delays nothing.
+  r := acq.record_web_pitch(jsonb_build_object('lead_id', l1));
+  SELECT * INTO m FROM acq.manual_outreach WHERE lead_id = l1 AND step_no = 0;
+  IF m.draft_source <> 'TEMPLATE' OR m.channel <> 'WHATSAPP' OR m.message NOT LIKE '%Pitch Test 1 in Saddar%' THEN
+    RAISE EXCEPTION 'FAIL: template fallback / channel wrong: % % %', m.draft_source, m.channel, m.message;
+  END IF;
+  -- a landline gets a call script, not a WhatsApp link
+  r := acq.record_web_pitch(jsonb_build_object('lead_id', l4, 'message', 'Hello from a test'));
+  IF r->>'channel' <> 'PHONE_CALL' THEN RAISE EXCEPTION 'FAIL: landline channel was %', r->>'channel'; END IF;
+  -- a retried run cannot queue a second pitch
+  r := acq.record_web_pitch(jsonb_build_object('lead_id', l1, 'message', 'second attempt'));
+  SELECT count(*) INTO n FROM acq.manual_outreach WHERE lead_id = l1 AND step_no = 0;
+  IF n <> 1 OR NOT (r->>'duplicate')::boolean THEN RAISE EXCEPTION 'FAIL: duplicate pitch queued'; END IF;
+  SELECT status INTO st FROM acq.leads WHERE id = l1;
+  IF st <> 'READY_FOR_REVIEW' THEN RAISE EXCEPTION 'FAIL: drafted lead is % not READY_FOR_REVIEW', st; END IF;
+  RAISE NOTICE 'PASS: template fallback, WhatsApp vs call, idempotent drafts';
+
+  -- Sent by hand: lead CONTACTED, follow-up scheduled, not resendable.
+  r := acq.mark_manual_sent(m.id, 'Edited before sending', 'smoke@test');
+  SELECT status INTO st FROM acq.leads WHERE id = l1;
+  IF NOT (r->>'ok')::boolean OR st <> 'CONTACTED' THEN RAISE EXCEPTION 'FAIL: mark sent: % / %', r, st; END IF;
+  IF (SELECT message FROM acq.manual_outreach WHERE id = m.id) <> 'Edited before sending' THEN
+    RAISE EXCEPTION 'FAIL: the edited text was not the one recorded';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM acq.manual_outreach WHERE lead_id = l1 AND step_no = 1 AND status = 'SCHEDULED') THEN
+    RAISE EXCEPTION 'FAIL: no follow-up scheduled';
+  END IF;
+  r := acq.mark_manual_sent(m.id, NULL, 'smoke@test');
+  IF (r->>'ok')::boolean THEN RAISE EXCEPTION 'FAIL: a sent message was marked sent twice'; END IF;
+
+  -- Any answer cancels the follow-up: the manual twin of record_reply().
+  r := acq.record_manual_outcome(l1, 'REPLIED', 'smoke@test');
+  IF EXISTS (SELECT 1 FROM acq.manual_outreach WHERE lead_id = l1 AND status = 'SCHEDULED') THEN
+    RAISE EXCEPTION 'FAIL: follow-up still scheduled after a reply';
+  END IF;
+  SELECT status INTO st FROM acq.leads WHERE id = l1;
+  IF st <> 'REPLIED' THEN RAISE EXCEPTION 'FAIL: lead is % after reply', st; END IF;
+  RAISE NOTICE 'PASS: sent by hand -> CONTACTED + follow-up; a reply cancels it';
+
+  -- "Stop messaging me" suppresses the number for good.
+  r := acq.record_manual_outcome(l1, 'OPT_OUT', 'smoke@test');
+  SELECT status INTO st FROM acq.leads WHERE id = l1;
+  IF st <> 'OPTED_OUT' OR NOT acq.is_suppressed(NULL, NULL, '+923003330001', NULL) THEN
+    RAISE EXCEPTION 'FAIL: opt-out not applied (status %)', st;
+  END IF;
+  r := acq.transition_lead(l1, 'QUALIFIED', 'try to revive', 'HUMAN');
+  IF (r->>'ok')::boolean THEN RAISE EXCEPTION 'FAIL: opted-out WEB lead revived'; END IF;
+  RAISE NOTICE 'PASS: opt-out suppresses the phone number and is permanent';
+END $$;
+
+UPDATE acq.settings SET value = '20'::jsonb WHERE key = 'web.max_drafts_per_day';
+
+\echo ''
+\echo '=== 14. Dashboard role: the queue, and nothing underneath ========='
+
+DO $$
+DECLARE n int; denied boolean := false; r jsonb;
+BEGIN
+  SET LOCAL ROLE acq_dashboard;
+  SELECT count(*) INTO n FROM acq.v_manual_outreach;
+  BEGIN
+    PERFORM 1 FROM acq.manual_outreach LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN denied := true;
+  END;
+  -- the three narrow entry points are callable
+  r := acq.skip_manual((SELECT id FROM acq.v_manual_outreach WHERE business_name = 'Pitch Test 4'),
+                       'smoke', 'smoke@test');
+  RESET ROLE;
+
+  IF NOT denied THEN RAISE EXCEPTION 'FAIL: acq_dashboard can read acq.manual_outreach directly'; END IF;
+  IF NOT (r->>'ok')::boolean THEN RAISE EXCEPTION 'FAIL: dashboard could not skip a draft: %', r; END IF;
+  RAISE NOTICE 'PASS: dashboard reads % queue row(s) via the view, not the table, and can act on them', n;
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;

@@ -1,0 +1,575 @@
+{
+  "name": "ACQ 25 \u2014 Website Audit",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 6-16 * * 1-6"
+            }
+          ]
+        }
+      },
+      "id": "wf25-00",
+      "name": "Every 30 Minutes (Daytime)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.crawl_user_agent') AS user_agent",
+        "options": {}
+      },
+      "id": "wf25-01",
+      "name": "Load Crawl Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Only WEB leads with a real website and no current audit: the predicate is\n-- inside the claim, so nothing is locked that this workflow cannot use.\nSELECT id, clinic_name, website, domain, category\nFROM acq.claim_leads_for_audit(10, $1)",
+        "options": {
+          "queryReplacement": "={{ [ 'wf25:' + $execution.id ] }}"
+        }
+      },
+      "id": "wf25-02",
+      "name": "Claim Websites To Audit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf25-03",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf25-04",
+      "name": "Nothing To Audit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf25-05",
+      "name": "Per Lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const l = $input.first().json;\ntry {\n  const u = new URL(/^https?:\\/\\//i.test(l.website) ? l.website : `http://${l.website}`);\n  return [{ json: { ...l, homepage: u.href, origin: u.origin,\n                    robots_url: `${u.origin}/robots.txt`, plan_error: null } }];\n} catch (e) {\n  return [{ json: { ...l, homepage: null, origin: null,\n                    robots_url: 'http://invalid.invalid/robots.txt',\n                    plan_error: 'unparseable_website_url' } }];\n}"
+      },
+      "id": "wf25-06",
+      "name": "Plan Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.robots_url }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $('Load Crawl Settings').first().json.user_agent }}"
+            }
+          ]
+        }
+      },
+      "id": "wf25-07",
+      "name": "Fetch robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 2000,
+      "notes": "Missing or unreachable robots.txt is treated as 'allowed'.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Same conservative reading as workflow 30: our own agent or *, Disallow only,\n// and the only question is whether the homepage itself may be fetched.\nconst lead = $('Plan Audit').first().json;\nconst resp = $input.first().json;\nif (lead.plan_error) return [{ json: { ...lead, allowed: false } }];\n\nconst status = resp.statusCode ?? 0;\nconst text = (status >= 200 && status < 300) ? String(resp.body ?? '') : '';\nconst disallow = [];\nlet applies = false;\nfor (const raw of text.split(/\\r?\\n/)) {\n  const line = raw.split('#')[0].trim();\n  if (!line) continue;\n  const [rawKey, ...rest] = line.split(':');\n  const key = rawKey.trim().toLowerCase();\n  const val = rest.join(':').trim();\n  if (key === 'user-agent') applies = (val === '*' || /zenvexa/i.test(val));\n  else if (key === 'disallow' && applies && val) disallow.push(val);\n}\nconst path = new URL(lead.homepage).pathname || '/';\nconst blocked = disallow.some(d => d === '/' || path.startsWith(d));\nreturn [{ json: { ...lead, allowed: !blocked, robots_disallow_rules: disallow } }];"
+      },
+      "id": "wf25-08",
+      "name": "Apply robots.txt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Homepage Allowed?-c",
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf25-09",
+      "name": "Homepage Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { ...$input.first().json, started_at: Date.now() } }];"
+      },
+      "id": "wf25-10",
+      "name": "Start Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.homepage }}",
+        "options": {
+          "timeout": 20000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "={{ $('Load Crawl Settings').first().json.user_agent }}"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html"
+            }
+          ]
+        }
+      },
+      "id": "wf25-11",
+      "name": "Fetch Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2680,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 2000,
+      "notes": "One page per business. Continues on error: a site that does not load is itself the finding.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// What a visitor would notice, as booleans the SQL can score. Every issue\n// name here is a weight key in the WEB scoring config (migration 011); an\n// issue with no weight is recorded but scores nothing.\nconst lead = $('Start Timer').first().json;\nconst resp = $input.first().json;\nconst status = Number(resp.statusCode ?? 0);\nconst body = typeof resp.body === 'string' ? resp.body : '';\nconst elapsed = lead.started_at ? Date.now() - lead.started_at : null;\nconst reachable = status >= 200 && status < 400 && body.length > 0;\n\nconst text = body\n  .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n  .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')\n  .replace(/\\s+/g, ' ').trim();\n\nconst titleM = body.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\nconst title = titleM ? titleM[1].replace(/\\s+/g, ' ').trim().slice(0, 300) : null;\nconst genM = body.match(/<meta[^>]+name=[\"']generator[\"'][^>]*content=[\"']([^\"']+)/i);\n\n// The listed URL may be http:// while the site redirects to https. A canonical\n// or og:url on https is good evidence it does.\nconst https = /^https:/i.test(lead.homepage) ||\n  /<(?:link[^>]+rel=[\"']canonical[\"']|meta[^>]+property=[\"']og:url[\"'])[^>]+(?:href|content)=[\"']https:/i.test(body);\nconst hasViewport = /<meta[^>]+name=[\"']viewport[\"']/i.test(body);\nconst hasTel = /href=[\"']tel:/i.test(body);\nconst hasWa = /(wa\\.me\\/|api\\.whatsapp\\.com|whatsapp:\\/\\/)/i.test(body);\nconst hasForm = /<form[\\s>]/i.test(body);\n\nconst thisYear = new Date().getFullYear();\nlet copyrightYear = null;\nfor (const m of body.matchAll(/(?:\u00a9|&copy;|&#169;|copyright)\\s*(?:[^<\\d]{0,20})?((?:19|20)\\d{2})(?:\\s*[-\u2013]\\s*((?:19|20)\\d{2}))?/gi)) {\n  const y = Number(m[2] || m[1]);\n  if (y >= 1995 && y <= thisYear + 1) copyrightYear = Math.max(copyrightYear ?? 0, y);\n}\n\n// Phrases only. Short page text is NOT evidence: a JavaScript-rendered site\n// ships almost no text in its HTML and would be called \"parked\" wrongly.\nconst parked = reachable &&\n  /(domain (?:is )?for sale|buy this domain|this domain (?:name )?(?:has been|is) (?:registered|parked)|parked (?:free|domain)|website (?:is )?(?:coming soon|under construction)|account (?:has been )?suspended|default web ?site page|index of \\/)/i.test(text);\n\nconst issues = [];\nif (!reachable) {\n  issues.push('site_unreachable');\n} else {\n  if (parked) issues.push('site_parked');\n  if (!https) issues.push('no_https');\n  if (!hasViewport) issues.push('not_mobile_friendly');\n  if ((elapsed != null && elapsed > 4000) || body.length > 3000000) issues.push('slow_or_heavy');\n  if (copyrightYear && copyrightYear <= thisYear - 3) issues.push('outdated');\n  if (!hasTel && !hasWa && !hasForm) issues.push('no_contact_cta');\n}\n\n// An address published on the business's own homepage, recorded with that\n// page as evidence. Prefer one on the site's own domain.\nconst EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g;\nconst site = (lead.domain || '').replace(/^www\\./, '');\nconst found = [...new Set((body.match(EMAIL_RE) || []).map(e => e.toLowerCase()))]\n  .filter(e => !/\\.(png|jpe?g|gif|svg|webp|css|js|woff2?)$/i.test(e))\n  .filter(e => !/(example|sentry|wixpress|godaddy|wordpress|@2x)/.test(e))\n  .sort((a, b) => (site && b.endsWith(`@${site}`) ? 1 : 0) - (site && a.endsWith(`@${site}`) ? 1 : 0));\n\nreturn [{ json: {\n  lead_id: lead.id,\n  url: lead.homepage,\n  final_url: lead.homepage,\n  robots_allowed: true,\n  reachable,\n  status_code: status || null,\n  https,\n  has_viewport: hasViewport,\n  title,\n  page_bytes: body.length,\n  elapsed_ms: elapsed,\n  copyright_year: copyrightYear,\n  has_tel_link: hasTel,\n  has_whatsapp_link: hasWa,\n  has_form: hasForm,\n  generator: genM ? genM[1].slice(0, 120) : null,\n  parked,\n  issues,\n  email: reachable ? (found[0] || null) : null,\n  email_url: reachable && found[0] ? lead.homepage : null,\n  raw: { error: resp.error ? String(resp.error.message || resp.error).slice(0, 300) : null,\n         text_chars: text.length },\n}}];"
+      },
+      "id": "wf25-12",
+      "name": "Analyze Website",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Not fetched. A URL that cannot even be parsed is a broken listing, which is\n// itself worth telling the owner; a robots.txt refusal is respected and the\n// lead simply goes unscored on site quality.\nconst lead = $input.first().json;\nreturn [{ json: {\n  lead_id: lead.id,\n  url: lead.website,\n  robots_allowed: lead.plan_error ? null : false,\n  reachable: lead.plan_error ? false : null,\n  issues: lead.plan_error ? ['site_unreachable'] : [],\n  raw: { reason: lead.plan_error || 'robots_disallow', rules: lead.robots_disallow_rules || [] },\n}}];"
+      },
+      "id": "wf25-13",
+      "name": "Robots Blocked",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_website_audit($1::jsonb) AS result",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify(Object.assign({}, $json, { execution_id: $execution.id })) }}"
+        }
+      },
+      "id": "wf25-14",
+      "name": "Record Audit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3340,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Stores the audit, keeps any email found with its page as evidence, rescores (BLENDED) and either keeps the lead QUALIFIED or rejects it \u2014 one transaction.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "wf25-15",
+      "name": "Pace Requests",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3560,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf25-16",
+      "name": "Audit Sweep Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3780,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes (Daytime)": {
+      "main": [
+        [
+          {
+            "node": "Load Crawl Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Crawl Settings": {
+      "main": [
+        [
+          {
+            "node": "Claim Websites To Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Websites To Audit": {
+      "main": [
+        [
+          {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing To Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Lead": {
+      "main": [
+        [
+          {
+            "node": "Audit Sweep Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Plan Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Audit": {
+      "main": [
+        [
+          {
+            "node": "Fetch robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Apply robots.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Homepage Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Homepage Allowed?": {
+      "main": [
+        [
+          {
+            "node": "Start Timer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Robots Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Timer": {
+      "main": [
+        [
+          {
+            "node": "Fetch Homepage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Homepage": {
+      "main": [
+        [
+          {
+            "node": "Analyze Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Website": {
+      "main": [
+        [
+          {
+            "node": "Record Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Robots Blocked": {
+      "main": [
+        [
+          {
+            "node": "Record Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Audit": {
+      "main": [
+        [
+          {
+            "node": "Pace Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pace Requests": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf25"
+  }
+}

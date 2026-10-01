@@ -367,6 +367,42 @@
         3560,
         300
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.email_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf50-16",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3780,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
     }
   ],
   "connections": {
@@ -396,7 +432,25 @@
       "main": [
         [
           {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
             "node": "Per Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Batch Complete",
             "type": "main",
             "index": 0
           }

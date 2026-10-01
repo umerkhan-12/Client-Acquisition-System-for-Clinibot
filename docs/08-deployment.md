@@ -79,7 +79,7 @@ cp .env.example .env
 ./ops/migrate-supabase.sh
 ```
 
-This applies all 10 migrations, loads the 8 prompts, reports whether the two
+This applies all 11 migrations, loads the 9 prompts, reports whether the two
 roles have passwords, and prints `acq.readiness()`.
 
 It sets `search_path` to include `extensions` before running. Supabase installs

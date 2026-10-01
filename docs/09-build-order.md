@@ -171,7 +171,7 @@ Consider, in this order:
 
 | Temptation | Why not |
 |---|---|
-| Turn on all 13 workflows at once | You will not know which is wrong |
+| Turn on all 15 workflows at once | You will not know which is wrong |
 | Skip Phase 2's manual review | The prompt is the product; infrastructure cannot save a bad email |
 | Raise the daily cap early | Warm-up is time, not volume |
 | Enable a second market before reading the compliance page | Different consent models |

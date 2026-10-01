@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { query, queryOne } from "@/lib/db";
 import { approveDraftForm, rejectDraftForm } from "./actions";
 
@@ -70,7 +71,7 @@ export default async function Page() {
     <main>
       <header className="top">
         <h1>Acquisition pipeline</h1>
-        <span className="sub">Clinibot · Zenvexa</span>
+        <span className="sub">Clinibot · Zenvexa · <Link href="/outreach">Website outreach</Link></span>
       </header>
 
       {warnings.map((w) => (

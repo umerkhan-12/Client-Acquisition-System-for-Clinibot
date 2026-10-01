@@ -12,7 +12,7 @@
   └──────────────────────────────┬───────────────────────────────────┘
                                  │
                     ┌────────────▼─────────────┐
-                    │  n8n  (13 workflows)     │  orchestration only:
+                    │  n8n  (15 workflows)     │  orchestration only:
                     │  scheduling, API calls,  │  fetch a batch, call
                     │  routing, retries        │  something, write back
                     └────────────┬─────────────┘

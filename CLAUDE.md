@@ -9,6 +9,12 @@ configurable), researches them from public sources, scores them, writes one
 personal email per clinic, sends inside deliverability-safe limits, reads the
 replies, and escalates to a human when someone is interested.
 
+Since migration 011 every lead carries an `offer`. `CLINIBOT` is the pipeline
+above. `WEB` sells websites to businesses that lack one: discovered by WEB
+tasks or rerouted from website-less clinics, audited (workflow 25), drafted as
+a WhatsApp message (45), and **sent by a person by hand** from the dashboard's
+`/outreach` page. See `docs/13-website-prospects.md`.
+
 It is **standalone**. It does not touch the Clinibot product database. See
 `docs/00-architecture-audit.md` before changing anything structural — it records
 why the design is what it is.
@@ -47,17 +53,19 @@ weakening one, stop and raise it.
 4. **All outbound mail goes through `acq.claim_send_slots()`.** It is the only
    path to SMTP. Never add a second send path — caps, sending window,
    per-domain limits, warm-up ramp and suppression are applied there in one
-   transaction.
+   transaction. The WEB offer's `acq.manual_outreach` queue is not a send path:
+   the system drafts, a person sends from their own phone. Keep it that way;
+   automated WhatsApp from a personal number gets the number banned.
 5. **Sending is refused while `company.postal_address` or
    `unsubscribe.base_url` is empty.** Both ship unset on purpose.
 
 ## Verify before you commit
 
 ```bash
-./scripts/bootstrap.sh acq_test          # migrations, prompts, 12 assertions, readiness
-node scripts/test_code_nodes.mjs         # 57 tests over the real Code-node JS
+./scripts/bootstrap.sh acq_test          # migrations, prompts, 21 assertions, readiness
+node scripts/test_code_nodes.mjs         # 76 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
-python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 65 statements
+python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 73 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests
 (cd dashboard && npx tsc --noEmit)       # deps installed; also: npx next build
 ```
@@ -93,6 +101,14 @@ Each of these was a real bug, found late. They are easy to reintroduce.
   afterwards in the outer query leaves unusable leads locked for 15 minutes and
   starves the next workflow. Use a purpose-built claimer with the predicate
   *inside* (`claim_leads_for_research`, `claim_leads_for_personalization`).
+  Every claimer filters on `offer` too: a WEB lead with a website is QUALIFIED
+  with a website, which is exactly what workflow 30 looks for.
+- **An empty claim is not empty.** `alwaysOutputData` makes n8n emit one
+  blank item when a claim returns nothing, and a loop treats it as work —
+  workflow 30 made a paid Gemini call for a blank clinic every idle hour.
+  Put `nonempty_gate()` between any claim and its loop.
+- **One active scoring config per offer, not overall.** `compute_score()`
+  selects by `offer`. A query that reads "the" active config gets two rows.
 - **Two statements in one query.** The Postgres node runs a parameterised query
   as a single statement. Use a data-modifying CTE instead.
 - **The two scoring phases have different gates.** `DETERMINISTIC` uses
@@ -122,17 +138,18 @@ Each of these was a real bug, found late. They are easy to reintroduce.
 ## Layout
 
 ```
-db/migrations/   10 SQL migrations — the actual logic. Idempotent, ordered.
+db/migrations/   11 SQL migrations — the actual logic. Idempotent, ordered.
 db/prisma/       Prisma models for the NestJS backend later. NOT a migration source.
-n8n/             build_workflows.py -> workflows/*.json (13 workflows, 182 nodes)
-prompts/         6 prompts, loaded into acq.prompts by scripts/load_prompts.py
+n8n/             build_workflows.py -> workflows/*.json (15 workflows, 217 nodes)
+prompts/         7 files / 9 prompt keys, loaded by scripts/load_prompts.py
 dashboard/       Next.js admin view on Vercel; magic-link auth + allowlist,
                  reads 5 views as acq_dashboard, writes only the approval queue
 scripts/         bootstrap, smoke test, SQL validator, code-node tests, deliverability
 ops/             migrate-supabase.sh, Caddyfile, docker-compose.n8n.yml
                  oracle/ = Always Free host; self-hosted/ = one-droplet fallback
 .claude/commands/ /status /verify /deploy /phase1..5 /daily — operator entry points
-docs/            00 is the audit — read it first; 12 is the go-to-market path
+docs/            00 is the audit — read it first; 12 is the go-to-market path;
+                 13 is the WEB offer
 ```
 
 ## Conventions
@@ -164,14 +181,14 @@ Target: Supabase (database) + an existing DigitalOcean n8n (workflows) +
 Vercel (dashboard). `ops/self-hosted/` still holds the one-droplet stack as a
 fallback. See `docs/08-deployment.md`.
 
-Verified: 9 migrations on a clean database, 8 prompts, 12 behavioural
-assertions, 65 SQL statements type-checked (0 errors), 57 Code-node tests,
-13 workflows / 182 nodes, 19 deliverability self-tests, all 13 workflows
-importing into real n8n, one executed against a real database.
+Verified: 11 migrations on a clean database (and re-run idempotently), 9
+prompts, 21 behavioural assertions, 73 SQL statements type-checked (0 errors),
+76 Code-node tests, 15 workflows / 217 nodes, 19 deliverability self-tests,
+dashboard `tsc` and `next build`.
 
 Not verified: anything needing credentials (Google Places, Gemini, SMTP, IMAP),
 prompt output quality — that is Phase 2 and needs human judgement — and the
-dashboard type-check, which needs `npm install` in `dashboard/` first.
+`/outreach` page rendered against live data (it needs Supabase auth).
 
 `product.capabilities` was rebuilt in migration 009 from the Clinibot source at
 `../clinibot/clinibot-backend/src`, not from the brief. Three of the brief's

@@ -22,7 +22,9 @@ discover → deduplicate → qualify → research → score → draft → approv
    → send → monitor → classify → follow up (or stop) → notify → book
 ```
 
-13 n8n workflows over one PostgreSQL schema. The workflows are deliberately
+15 n8n workflows over one PostgreSQL schema. Two offers share it: Clinibot
+for clinics (emailed), and websites for businesses that lack one (drafted
+WhatsApp messages you send by hand — [13](docs/13-website-prospects.md)). The workflows are deliberately
 thin: deduplication, scoring, rate limiting and state transitions are single SQL
 calls, because n8n executions overlap and retry, and an invariant expressed as
 "count rows, then act" does not survive that.
@@ -34,11 +36,11 @@ Everything in this repository was executed, not just written:
 | | Status |
 |---|---|
 | SQL migrations | Applied to PostgreSQL 16.13, idempotent, rebuild clean from scratch |
-| Dedup, scoring, rate limits, opt-out, work claiming, state machine | **12 assertions in `scripts/smoke_test.sql`, all passing** |
-| Code-node logic — parsers, guardrails, robots.txt, bounce detection | **57 tests in `scripts/test_code_nodes.mjs`, run against the committed workflow JSON** |
-| SQL inside the workflows | **All 65 statements `PREPARE`-checked against the live schema** |
+| Dedup, scoring, rate limits, opt-out, work claiming, state machine | **21 assertions in `scripts/smoke_test.sql`, all passing** |
+| Code-node logic — parsers, guardrails, robots.txt, bounce detection | **76 tests in `scripts/test_code_nodes.mjs`, run against the committed workflow JSON** |
+| SQL inside the workflows | **All 73 statements `PREPARE`-checked against the live schema** |
 | Workflow JSON | Structurally validated — no duplicate names, no dangling connections, no unreachable nodes |
-| Prompt loader | Round-trips all 8 registrations through `acq.get_prompt()`; the build fails if any registered prompt is unreachable from a workflow |
+| Prompt loader | Round-trips all 9 registrations through `acq.get_prompt()`; the build fails if any registered prompt is unreachable from a workflow |
 | Deliverability checker | **21 self-tests over SPF/DKIM/DMARC/MX evaluation, all passing** |
 | Dashboard | Typechecks, builds, and renders live data over a least-privilege role |
 | `docker-compose.yml` | `docker compose config` valid, guards fire, and **all 29 env vars verified against a real n8n** (`scripts/check_n8n_env.sh`) |
@@ -92,7 +94,7 @@ docker compose up -d n8n
 still blocking the first send. Two ship deliberately unset.
 
 Then follow [`docs/09-build-order.md`](docs/09-build-order.md). **Do not
-activate all 13 workflows at once.** Nothing reaches a real clinic before
+activate all 15 workflows at once.** Nothing reaches a real clinic before
 Phase 3.
 
 ## Layout
@@ -100,7 +102,7 @@ Phase 3.
 ```
 db/migrations/     6 SQL migrations — the actual logic lives here
 db/prisma/         Prisma models, for the NestJS backend later
-n8n/               build_workflows.py → workflows/*.json (13 workflows)
+n8n/               build_workflows.py → workflows/*.json (15 workflows)
 prompts/           6 production prompts, loaded into the database
 dashboard/         Next.js admin view + approval queue
 scripts/           smoke test, prompt loader, SQL validator, deliverability check
@@ -113,7 +115,7 @@ docs/              audit, architecture, workflows, costs, deployment, compliance
 |---|---|
 | [00 — Architecture audit](docs/00-architecture-audit.md) | **Start here.** Ten findings, the cheapest reliable approach, what not to build |
 | [01 — Architecture](docs/01-architecture.md) | Data flow, state machine, concurrency, failure handling |
-| [02 — Workflow reference](docs/02-workflows.md) | All 13 workflows, node by node *(generated from the JSON)* |
+| [02 — Workflow reference](docs/02-workflows.md) | All 15 workflows, node by node *(generated from the JSON)* |
 | [03 — Database](docs/03-database.md) | Schema, the four design decisions, configuration |
 | [04 — Integrations](docs/04-integrations.md) | Which APIs, why, and which to avoid |
 | [05 — Prompts](docs/05-prompts.md) | The six prompts and the JSON contract |
@@ -123,6 +125,7 @@ docs/              audit, architecture, workflows, costs, deployment, compliance
 | [09 — Build order](docs/09-build-order.md) | Six phases, minimum viable system first |
 | [10 — Compliance](docs/10-compliance.md) | Per-market consent, deletion, AI disclosure |
 | [11 — Runbook](docs/11-runbook.md) | Daily checks and what to do when something breaks |
+| [13 — Website prospects](docs/13-website-prospects.md) | The WEB offer: find businesses without a good website, draft, send by hand |
 
 ## The rules, and how they are enforced
 

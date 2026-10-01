@@ -91,7 +91,7 @@ the $6 droplet is the boring answer and it is enough.
 
 Then follow [`docs/08-deployment.md`](../../docs/08-deployment.md) from
 **"2. n8n — the instance you already run"**: create the credentials, import the
-13 workflows, fix the placeholders, set the error workflow, and write the
+15 workflows, fix the placeholders, set the error workflow, and write the
 webhook URLs back into `acq.settings`.
 
 ## arm64
@@ -100,7 +100,7 @@ n8n publishes multi-arch images, so `docker.n8n.io/n8nio/n8n` runs natively on
 A1 with nothing special required — as do `caddy:2-alpine` and `postgres:16-alpine`.
 
 The one thing to watch is **community nodes with native dependencies**, which
-occasionally ship x86-only binaries. None of the 13 workflows uses one: they
+occasionally ship x86-only binaries. None of the 15 workflows uses one: they
 are all stock nodes (HTTP Request, Postgres, Code, Email, Telegram, Schedule,
 Webhook, Execute Workflow).
 

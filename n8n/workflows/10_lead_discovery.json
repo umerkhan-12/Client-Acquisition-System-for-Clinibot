@@ -110,7 +110,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT id, city, area, query_term, category, provider, priority_tier, bbox,\n       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code\nFROM acq.next_discovery_tasks($1::int) d",
+        "query": "SELECT id, city, area, query_term, category, provider, priority_tier, bbox,\n       offer, osm_selectors,\n       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code\nFROM acq.next_discovery_tasks($1::int) d",
         "options": {
           "queryReplacement": "={{ [ $json.max_tasks ] }}"
         }
@@ -220,7 +220,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const t = $input.first().json;\nconst bb = t.bbox || {};\nconst lat = bb.lat, lng = bb.lng, r = bb.radius_m || 3000;\n\nif (lat == null || lng == null) {\n  throw new Error(`Discovery task ${t.id} has no usable search centre in bbox.`);\n}\n\n// One call returns every healthcare POI around the point; the category is read\n// off the tags afterwards. `nwr` covers nodes, ways and relations.\nconst q = `[out:json][timeout:60];\n(\n  nwr[\"amenity\"~\"^(clinic|doctors|dentist)$\"](around:${r},${lat},${lng});\n  nwr[\"healthcare\"](around:${r},${lat},${lng});\n);\nout center tags 300;`;\n\nreturn [{ json: { ...t, overpass_query: q } }];"
+        "jsCode": "const t = $input.first().json;\nconst bb = t.bbox || {};\nconst lat = bb.lat, lng = bb.lng, r = bb.radius_m || 3000;\n\nif (lat == null || lng == null) {\n  throw new Error(`Discovery task ${t.id} has no usable search centre in bbox.`);\n}\n\n// CLINIBOT: one call returns every healthcare POI around the point; the\n// category is read off the tags afterwards. `nwr` covers nodes, ways and\n// relations.\nlet selectors = ['[\"amenity\"~\"^(clinic|doctors|dentist)$\"]', '[\"healthcare\"]'];\n\n// WEB: the task names its own tag selectors (printers, salons, ...). They come\n// from the database, but are still checked against a strict shape before being\n// spliced into Overpass QL, so a bad row fails loudly instead of sending an\n// arbitrary query to a volunteer-run service.\nif (t.offer === 'WEB') {\n  const own = Array.isArray(t.osm_selectors) ? t.osm_selectors : [];\n  const SHAPE = /^(\\[\"[a-z_:]+\"(?:[=~]\"[^\"\\\\]*\")?\\])+$/;\n  const bad = own.filter(x => !SHAPE.test(x));\n  if (!own.length || bad.length) {\n    throw new Error(`WEB discovery task ${t.id} has unusable osm_selectors: ` +\n                    JSON.stringify(bad.length ? bad : own));\n  }\n  selectors = own;\n}\n\nconst q = `[out:json][timeout:60];\n(\n${selectors.map(s => `  nwr${s}(around:${r},${lat},${lng});`).join('\\n')}\n);\nout center tags 300;`;\n\nreturn [{ json: { ...t, overpass_query: q } }];"
       },
       "id": "wf10-07",
       "name": "Build Overpass Query",
@@ -280,7 +280,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const task = $('Build Overpass Query').first().json;\nconst maxNew = $('Check Budget + Settings').first().json.max_new || 60;\nconst resp = $input.first().json;\nconst body = resp.body ?? resp;\nconst elements = body.elements || [];\n\n// Tag-driven category assignment. Falls back to name keywords because OSM in\n// Pakistan reliably records amenity=clinic/doctors/dentist but rarely records\n// healthcare:speciality.\nfunction categorize(tags, name) {\n  const spec = (tags['healthcare:speciality'] || '').toLowerCase();\n  const hc = (tags.healthcare || '').toLowerCase();\n  const am = (tags.amenity || '').toLowerCase();\n  const n = (name || '').toLowerCase();\n  const has = (...w) => w.some(x => spec.includes(x) || n.includes(x));\n\n  if (am === 'dentist' || hc === 'dentist' || has('dental', 'dentist', 'orthodont'))\n    return ['DENTAL', 1];\n  if (has('dermatolog', 'skin')) return ['DERMATOLOGY', 1];\n  if (has('plastic_surgery', 'plastic surgery', 'cosmetic surgery')) return ['PLASTIC_SURGERY', 1];\n  if (has('cosmetic', 'aesthetic', 'laser', 'hair transplant')) return ['AESTHETIC', 1];\n  if (has('fertility', 'ivf', 'gynaecolog', 'gynecolog')) return ['FERTILITY', 1];\n  if (hc === 'physiotherapist' || has('physiotherap', 'physical therapy')) return ['PHYSIOTHERAPY', 1];\n  if (has('eye', 'ophthalm', 'ent ', 'cardiolog', 'orthoped', 'urolog', 'neurolog'))\n    return ['SPECIALIST', 1];\n  if (hc === 'laboratory' || has('diagnostic', 'laborator', 'radiolog', 'imaging'))\n    return ['DIAGNOSTIC', 2];\n  if (am === 'clinic' || am === 'doctors' || hc === 'doctor') return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\n\nconst out = [];\nfor (const el of elements) {\n  const tags = el.tags || {};\n  const name = (tags.name || tags['name:en'] || '').trim();\n\n  // No name means nothing citable to write about, and nothing to deduplicate on.\n  if (!name) continue;\n\n  // Hospitals and government facilities are out of scope by design.\n  if ((tags.amenity || '') === 'hospital') continue;\n\n  const [category, tier] = categorize(tags, name);\n  const osmUrl = `https://www.openstreetmap.org/${el.type}/${el.id}`;\n  const email = tags['contact:email'] || tags.email || null;\n  const website = tags['contact:website'] || tags.website || null;\n  const phone = tags['contact:phone'] || tags.phone || null;\n  const whatsapp = tags['contact:whatsapp'] || tags.whatsapp || null;\n\n  const contacts = [];\n  if (email)    contacts.push({ contact_type: 'EMAIL',    value: email,    source: 'OSM', source_url: osmUrl, is_primary: true });\n  if (phone)    contacts.push({ contact_type: 'PHONE',    value: phone,    source: 'OSM', source_url: osmUrl });\n  if (whatsapp) contacts.push({ contact_type: 'WHATSAPP', value: whatsapp, source: 'OSM', source_url: osmUrl });\n\n  out.push({ json: {\n    market_code: task.market_code,\n    clinic_name: name,\n    website,\n    city: task.city,\n    area: task.area || tags['addr:suburb'] || null,\n    address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:suburb']]\n               .filter(Boolean).join(' ') || null,\n    lat: String(el.lat ?? el.center?.lat ?? ''),\n    lng: String(el.lon ?? el.center?.lon ?? ''),\n    phone,\n    whatsapp,\n    // An email tagged in OSM is publicly published data with a citable URL,\n    // so it carries real provenance. Anything without both is dropped by\n    // acq.upsert_lead rather than guessed at.\n    public_email: email,\n    email_source: email ? 'OSM' : null,\n    email_evidence_url: email ? osmUrl : null,\n    category,\n    priority_tier: tier,\n    source: 'OSM',\n    source_url: osmUrl,\n    source_ref: `${el.type}/${el.id}`,\n    source_ref_type: 'OSM_ID',\n    contacts,\n    raw: { OSM: { tags, element_type: el.type, element_id: el.id } },\n  }});\n  if (out.length >= maxNew) break;\n}\nreturn out;"
+        "jsCode": "const task = $('Build Overpass Query').first().json;\nconst maxNew = $('Check Budget + Settings').first().json.max_new || 60;\nconst resp = $input.first().json;\nconst body = resp.body ?? resp;\nconst elements = body.elements || [];\n\n// Tag-driven category assignment. Falls back to name keywords because OSM in\n// Pakistan reliably records amenity=clinic/doctors/dentist but rarely records\n// healthcare:speciality.\nfunction categorize(tags, name) {\n  const spec = (tags['healthcare:speciality'] || '').toLowerCase();\n  const hc = (tags.healthcare || '').toLowerCase();\n  const am = (tags.amenity || '').toLowerCase();\n  const n = (name || '').toLowerCase();\n  const has = (...w) => w.some(x => spec.includes(x) || n.includes(x));\n\n  if (am === 'dentist' || hc === 'dentist' || has('dental', 'dentist', 'orthodont'))\n    return ['DENTAL', 1];\n  if (has('dermatolog', 'skin')) return ['DERMATOLOGY', 1];\n  if (has('plastic_surgery', 'plastic surgery', 'cosmetic surgery')) return ['PLASTIC_SURGERY', 1];\n  if (has('cosmetic', 'aesthetic', 'laser', 'hair transplant')) return ['AESTHETIC', 1];\n  if (has('fertility', 'ivf', 'gynaecolog', 'gynecolog')) return ['FERTILITY', 1];\n  if (hc === 'physiotherapist' || has('physiotherap', 'physical therapy')) return ['PHYSIOTHERAPY', 1];\n  if (has('eye', 'ophthalm', 'ent ', 'cardiolog', 'orthoped', 'urolog', 'neurolog'))\n    return ['SPECIALIST', 1];\n  if (hc === 'laboratory' || has('diagnostic', 'laborator', 'radiolog', 'imaging'))\n    return ['DIAGNOSTIC', 2];\n  if (am === 'clinic' || am === 'doctors' || hc === 'doctor') return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\n\nconst out = [];\nfor (const el of elements) {\n  const tags = el.tags || {};\n  const name = (tags.name || tags['name:en'] || '').trim();\n\n  // No name means nothing citable to write about, and nothing to deduplicate on.\n  if (!name) continue;\n\n  // Hospitals and government facilities are out of scope by design.\n  if ((tags.amenity || '') === 'hospital') continue;\n\n  // A WEB task already knows what it searched for; reading healthcare tags only\n  // applies to clinic discovery.\n  const [category, tier] = task.offer === 'WEB'\n    ? [task.category, task.priority_tier ?? 2]\n    : categorize(tags, name);\n  const osmUrl = `https://www.openstreetmap.org/${el.type}/${el.id}`;\n  const email = tags['contact:email'] || tags.email || null;\n  const website = tags['contact:website'] || tags.website || null;\n  const phone = tags['contact:phone'] || tags.phone || null;\n  const whatsapp = tags['contact:whatsapp'] || tags.whatsapp || null;\n\n  const contacts = [];\n  if (email)    contacts.push({ contact_type: 'EMAIL',    value: email,    source: 'OSM', source_url: osmUrl, is_primary: true });\n  if (phone)    contacts.push({ contact_type: 'PHONE',    value: phone,    source: 'OSM', source_url: osmUrl });\n  if (whatsapp) contacts.push({ contact_type: 'WHATSAPP', value: whatsapp, source: 'OSM', source_url: osmUrl });\n\n  out.push({ json: {\n    market_code: task.market_code,\n    clinic_name: name,\n    website,\n    city: task.city,\n    area: task.area || tags['addr:suburb'] || null,\n    address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:suburb']]\n               .filter(Boolean).join(' ') || null,\n    lat: String(el.lat ?? el.center?.lat ?? ''),\n    lng: String(el.lon ?? el.center?.lon ?? ''),\n    phone,\n    whatsapp,\n    // An email tagged in OSM is publicly published data with a citable URL,\n    // so it carries real provenance. Anything without both is dropped by\n    // acq.upsert_lead rather than guessed at.\n    public_email: email,\n    email_source: email ? 'OSM' : null,\n    email_evidence_url: email ? osmUrl : null,\n    category,\n    priority_tier: tier,\n    source: 'OSM',\n    source_url: osmUrl,\n    source_ref: `${el.type}/${el.id}`,\n    source_ref_type: 'OSM_ID',\n    offer: task.offer || 'CLINIBOT',\n    contacts,\n    raw: { OSM: { tags, element_type: el.type, element_id: el.id } },\n  }});\n  if (out.length >= maxNew) break;\n}\nreturn out;"
       },
       "id": "wf10-09",
       "name": "Normalize OSM Results",
@@ -424,7 +424,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const task = $('Per Task').first().json;\nconst resp = $input.first().json;\nconst p = resp.body ?? resp;\n\nif (!p || !p.id) return [];\nif (p.businessStatus && p.businessStatus !== 'OPERATIONAL') return [];\n\nconst name = p.displayName?.text || '';\nif (!name) return [];\nif (/\\b(hospital|medical centre complex|trust)\\b/i.test(name)) return [];\n\nconst mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;\nconst phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;\n\nfunction categorize(type, n) {\n  const s = `${type || ''} ${n}`.toLowerCase();\n  if (/dental|dentist|orthodont/.test(s))            return ['DENTAL', 1];\n  if (/dermatolog|skin/.test(s))                     return ['DERMATOLOGY', 1];\n  if (/plastic surgery|plastic_surgeon/.test(s))     return ['PLASTIC_SURGERY', 1];\n  if (/cosmetic|aesthetic|laser|hair transplant/.test(s)) return ['AESTHETIC', 1];\n  if (/fertility|ivf/.test(s))                       return ['FERTILITY', 1];\n  if (/physiotherap|physical_therapist/.test(s))     return ['PHYSIOTHERAPY', 1];\n  if (/diagnostic|laborator|radiolog/.test(s))       return ['DIAGNOSTIC', 2];\n  if (/doctor|clinic|physician/.test(s))             return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\nconst [category, tier] = categorize(p.primaryType, name);\n\nconst contacts = [];\nif (phone) contacts.push({ contact_type: 'PHONE', value: phone,\n                           source: 'GOOGLE_BUSINESS', source_url: mapsUrl });\n\n// Google Places does not expose email addresses. None is invented here; if the\n// clinic publishes one on its own site, workflow 30 reads it there with the\n// page URL recorded as evidence.\nreturn [{ json: {\n  market_code: task.market_code,\n  clinic_name: name,\n  website: p.websiteUri || null,\n  city: task.city,\n  area: task.area || null,\n  address: p.formattedAddress || null,\n  lat: String(p.location?.latitude ?? ''),\n  lng: String(p.location?.longitude ?? ''),\n  phone,\n  public_email: null,\n  category: category === 'OTHER' ? (task.category === 'ANY' ? 'OTHER' : task.category) : category,\n  priority_tier: tier,\n  source: 'GOOGLE_PLACES',\n  source_url: mapsUrl,\n  source_ref: p.id,\n  source_ref_type: 'PLACE_ID',\n  contacts,\n  raw: { GOOGLE_PLACES: {\n    userRatingCount: p.userRatingCount ?? 0,\n    rating: p.rating ?? null,\n    primaryType: p.primaryType ?? null,\n    editorialSummary: p.editorialSummary?.text ?? null,\n  }},\n}}];"
+        "jsCode": "const task = $('Per Task').first().json;\nconst resp = $input.first().json;\nconst p = resp.body ?? resp;\n\nif (!p || !p.id) return [];\nif (p.businessStatus && p.businessStatus !== 'OPERATIONAL') return [];\n\nconst name = p.displayName?.text || '';\nif (!name) return [];\nconst isWeb = task.offer === 'WEB';\nif (!isWeb && /\\b(hospital|medical centre complex|trust)\\b/i.test(name)) return [];\n\nconst mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;\nconst phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;\n\nfunction categorize(type, n) {\n  const s = `${type || ''} ${n}`.toLowerCase();\n  if (/dental|dentist|orthodont/.test(s))            return ['DENTAL', 1];\n  if (/dermatolog|skin/.test(s))                     return ['DERMATOLOGY', 1];\n  if (/plastic surgery|plastic_surgeon/.test(s))     return ['PLASTIC_SURGERY', 1];\n  if (/cosmetic|aesthetic|laser|hair transplant/.test(s)) return ['AESTHETIC', 1];\n  if (/fertility|ivf/.test(s))                       return ['FERTILITY', 1];\n  if (/physiotherap|physical_therapist/.test(s))     return ['PHYSIOTHERAPY', 1];\n  if (/diagnostic|laborator|radiolog/.test(s))       return ['DIAGNOSTIC', 2];\n  if (/doctor|clinic|physician/.test(s))             return ['GENERAL_PRACTICE', 2];\n  return ['OTHER', 3];\n}\nconst [category, tier] = isWeb\n  ? [task.category, task.priority_tier ?? 2]\n  : categorize(p.primaryType, name);\n\nconst contacts = [];\nif (phone) contacts.push({ contact_type: 'PHONE', value: phone,\n                           source: 'GOOGLE_BUSINESS', source_url: mapsUrl });\n\n// Google Places does not expose email addresses. None is invented here; if the\n// clinic publishes one on its own site, workflow 30 reads it there with the\n// page URL recorded as evidence.\nreturn [{ json: {\n  market_code: task.market_code,\n  clinic_name: name,\n  website: p.websiteUri || null,\n  city: task.city,\n  area: task.area || null,\n  address: p.formattedAddress || null,\n  lat: String(p.location?.latitude ?? ''),\n  lng: String(p.location?.longitude ?? ''),\n  phone,\n  public_email: null,\n  category: category === 'OTHER' ? (task.category === 'ANY' ? 'OTHER' : task.category) : category,\n  priority_tier: tier,\n  offer: task.offer || 'CLINIBOT',\n  source: 'GOOGLE_PLACES',\n  source_url: mapsUrl,\n  source_ref: p.id,\n  source_ref_type: 'PLACE_ID',\n  contacts,\n  raw: { GOOGLE_PLACES: {\n    userRatingCount: p.userRatingCount ?? 0,\n    rating: p.rating ?? null,\n    primaryType: p.primaryType ?? null,\n    editorialSummary: p.editorialSummary?.text ?? null,\n  }},\n}}];"
       },
       "id": "wf10-14",
       "name": "Normalize Place Details",
@@ -438,7 +438,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT acq.upsert_lead($1::jsonb) AS result",
+        "query": "SELECT acq.upsert_lead_for_offer($1::jsonb) AS result",
         "options": {
           "queryReplacement": "={{ JSON.stringify($json) }}"
         }
@@ -460,7 +460,7 @@
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
-      "notes": "One entry point for every source. Deduplication, provenance checking and contact recording all happen inside this call.",
+      "notes": "One entry point for every source. Deduplication, provenance checking, contact recording and the offer tag all happen inside this call.",
       "notesInFlow": false
     },
     {
@@ -505,6 +505,42 @@
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf10-18",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4220,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
     }
   ],
   "connections": {
@@ -552,7 +588,25 @@
       "main": [
         [
           {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
             "node": "Per Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Run",
             "type": "main",
             "index": 0
           }

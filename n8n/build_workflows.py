@@ -600,6 +600,19 @@ def wait_node(b, name, seconds, **kw):
                   tv=1.1, **kw)
 
 
+def nonempty_gate(b, key_field):
+    """Stops an empty claim from being processed as a lead.
+
+    Claim queries set alwaysOutputData so a run with nothing to do still
+    finishes cleanly — but n8n implements that by emitting ONE EMPTY ITEM. Fed
+    straight into a loop, that item is treated as work: workflow 30 would
+    research a blank clinic (a paid Gemini call) every hour the queue is
+    empty. Output 0 = there is real work, output 1 = nothing claimed."""
+    return if_bool(b, "Anything Claimed?", "={{ !!$json.%s }}" % key_field,
+                   notes="alwaysOutputData emits one empty item when the claim "
+                         "returns nothing; this keeps it out of the loop.")
+
+
 def loop_node(b, name, size=1, **kw):
     """splitInBatches. Output 0 = 'done', output 1 = 'loop'."""
     return b.node(name, "n8n-nodes-base.splitInBatches",
@@ -642,6 +655,7 @@ VALUES ('10_lead_discovery', $1, 'ERROR', now(), 'daily_cost_cap_reached', $2::j
 
     tasks = pg(b, "Claim Discovery Tasks", """
 SELECT id, city, area, query_term, category, provider, priority_tier, bbox,
+       offer, osm_selectors,
        (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code
 FROM acq.next_discovery_tasks($1::int) d
 """.strip(),
@@ -663,12 +677,29 @@ if (lat == null || lng == null) {
   throw new Error(`Discovery task ${t.id} has no usable search centre in bbox.`);
 }
 
-// One call returns every healthcare POI around the point; the category is read
-// off the tags afterwards. `nwr` covers nodes, ways and relations.
+// CLINIBOT: one call returns every healthcare POI around the point; the
+// category is read off the tags afterwards. `nwr` covers nodes, ways and
+// relations.
+let selectors = ['["amenity"~"^(clinic|doctors|dentist)$"]', '["healthcare"]'];
+
+// WEB: the task names its own tag selectors (printers, salons, ...). They come
+// from the database, but are still checked against a strict shape before being
+// spliced into Overpass QL, so a bad row fails loudly instead of sending an
+// arbitrary query to a volunteer-run service.
+if (t.offer === 'WEB') {
+  const own = Array.isArray(t.osm_selectors) ? t.osm_selectors : [];
+  const SHAPE = /^(\["[a-z_:]+"(?:[=~]"[^"\\]*")?\])+$/;
+  const bad = own.filter(x => !SHAPE.test(x));
+  if (!own.length || bad.length) {
+    throw new Error(`WEB discovery task ${t.id} has unusable osm_selectors: ` +
+                    JSON.stringify(bad.length ? bad : own));
+  }
+  selectors = own;
+}
+
 const q = `[out:json][timeout:60];
 (
-  nwr["amenity"~"^(clinic|doctors|dentist)$"](around:${r},${lat},${lng});
-  nwr["healthcare"](around:${r},${lat},${lng});
+${selectors.map(s => `  nwr${s}(around:${r},${lat},${lng});`).join('\n')}
 );
 out center tags 300;`;
 
@@ -726,7 +757,11 @@ for (const el of elements) {
   // Hospitals and government facilities are out of scope by design.
   if ((tags.amenity || '') === 'hospital') continue;
 
-  const [category, tier] = categorize(tags, name);
+  // A WEB task already knows what it searched for; reading healthcare tags only
+  // applies to clinic discovery.
+  const [category, tier] = task.offer === 'WEB'
+    ? [task.category, task.priority_tier ?? 2]
+    : categorize(tags, name);
   const osmUrl = `https://www.openstreetmap.org/${el.type}/${el.id}`;
   const email = tags['contact:email'] || tags.email || null;
   const website = tags['contact:website'] || tags.website || null;
@@ -762,6 +797,7 @@ for (const el of elements) {
     source_url: osmUrl,
     source_ref: `${el.type}/${el.id}`,
     source_ref_type: 'OSM_ID',
+    offer: task.offer || 'CLINIBOT',
     contacts,
     raw: { OSM: { tags, element_type: el.type, element_id: el.id } },
   }});
@@ -835,7 +871,8 @@ if (p.businessStatus && p.businessStatus !== 'OPERATIONAL') return [];
 
 const name = p.displayName?.text || '';
 if (!name) return [];
-if (/\b(hospital|medical centre complex|trust)\b/i.test(name)) return [];
+const isWeb = task.offer === 'WEB';
+if (!isWeb && /\b(hospital|medical centre complex|trust)\b/i.test(name)) return [];
 
 const mapsUrl = `https://www.google.com/maps/place/?q=place_id:${p.id}`;
 const phone = p.internationalPhoneNumber || p.nationalPhoneNumber || null;
@@ -852,7 +889,9 @@ function categorize(type, n) {
   if (/doctor|clinic|physician/.test(s))             return ['GENERAL_PRACTICE', 2];
   return ['OTHER', 3];
 }
-const [category, tier] = categorize(p.primaryType, name);
+const [category, tier] = isWeb
+  ? [task.category, task.priority_tier ?? 2]
+  : categorize(p.primaryType, name);
 
 const contacts = [];
 if (phone) contacts.push({ contact_type: 'PHONE', value: phone,
@@ -874,6 +913,7 @@ return [{ json: {
   public_email: null,
   category: category === 'OTHER' ? (task.category === 'ANY' ? 'OTHER' : task.category) : category,
   priority_tier: tier,
+  offer: task.offer || 'CLINIBOT',
   source: 'GOOGLE_PLACES',
   source_url: mapsUrl,
   source_ref: p.id,
@@ -888,10 +928,11 @@ return [{ json: {
 }}];
 """.strip())
 
-    upsert = pg(b, "Upsert Lead", "SELECT acq.upsert_lead($1::jsonb) AS result",
+    upsert = pg(b, "Upsert Lead", "SELECT acq.upsert_lead_for_offer($1::jsonb) AS result",
                 replacement="={{ JSON.stringify($json) }}",
                 notes="One entry point for every source. Deduplication, provenance "
-                      "checking and contact recording all happen inside this call.")
+                      "checking, contact recording and the offer tag all happen "
+                      "inside this call.")
 
     pause = wait_node(b, "Pause Between Areas", 4,
                       notes="Politeness delay for Overpass and a natural rate limit for Places.")
@@ -907,7 +948,10 @@ VALUES ('10_lead_discovery', $1, 'SUCCESS',
     b.chain(t, budget, within)
     b.connect(within, tasks, src_out=0)
     b.connect(within, halted, src_out=1)
-    b.chain(tasks, loop)
+    gate = nonempty_gate(b, "id")
+    b.chain(tasks, gate)
+    b.connect(gate, loop, src_out=0)
+    b.connect(gate, record, src_out=1)
     b.connect(loop, route, src_out=1)          # loop branch
     b.connect(loop, record, src_out=0)         # done branch
 
@@ -947,6 +991,19 @@ FROM acq.claim_leads(ARRAY['NEW']::acq.lead_status[], 50, $1)
         notes="FOR UPDATE SKIP LOCKED inside claim_leads means overlapping runs "
               "take disjoint work instead of colliding.")
 
+    route = pg(b, "Route Offer", """
+-- A clinic with no website and no public email cannot be a Clinibot prospect,
+-- but it is exactly a website prospect. The decision is SQL (migration 011),
+-- and this returns the lead as it now stands, offer included.
+SELECT id, clinic_name, website, city, area, phone, whatsapp, public_email,
+       category, priority_tier, source, domain, offer
+FROM acq.route_offer(NULLIF($1, '')::uuid)
+""".strip(),
+        replacement="={{ [ $json.id || '' ] }}",
+        always_output=True,
+        notes="One row in, one row out, so the index alignment the nodes below "
+              "rely on still holds.")
+
     triage = code(b, "Deterministic Triage", r"""
 // Rejections that need no model call and no network request. Anything decided
 // here costs nothing, which is the whole point of running it before workflow 30.
@@ -954,6 +1011,7 @@ const out = [];
 for (const item of $input.all()) {
   const l = item.json;
   const reasons = [];
+  const isWeb = l.offer === 'WEB';
 
   const hasEmail = !!l.public_email;
   const hasPhone = !!l.phone;
@@ -961,19 +1019,28 @@ for (const item of $input.all()) {
   const hasWebsite = !!l.website;
 
   if (!hasEmail && !hasPhone && !hasWhatsapp) reasons.push('no_contact_channel');
-  if (!hasWebsite && !hasEmail) reasons.push('nothing_to_research');
-  if (/\b(hospital|trust|foundation|government|govt|welfare|charitable|medical college)\b/i
-        .test(l.clinic_name || '')) reasons.push('large_institution');
   if ((l.clinic_name || '').trim().length < 3) reasons.push('unusable_name');
-  if (/\b(pharmacy|medical store|chemist|drug store)\b/i.test(l.clinic_name || ''))
-    reasons.push('not_appointment_based');
+
+  if (isWeb) {
+    // A website pitch is sent by hand over WhatsApp or phone; with no number
+    // there is no way to make it.
+    if (!hasPhone && !hasWhatsapp && hasEmail) reasons.push('no_phone_for_manual_outreach');
+    if (/\b(hospital|government|govt|university|bank)\b/i.test(l.clinic_name || ''))
+      reasons.push('large_institution');
+  } else {
+    if (!hasWebsite && !hasEmail) reasons.push('nothing_to_research');
+    if (/\b(hospital|trust|foundation|government|govt|welfare|charitable|medical college)\b/i
+          .test(l.clinic_name || '')) reasons.push('large_institution');
+    if (/\b(pharmacy|medical store|chemist|drug store)\b/i.test(l.clinic_name || ''))
+      reasons.push('not_appointment_based');
+  }
 
   out.push({ json: {
     ...l,
     disqualified: reasons.length > 0,
     disqualify_reasons: reasons,
-    // Only leads with a research surface are worth an AI call.
-    researchable: hasWebsite,
+    // Only Clinibot leads with a research surface are worth an AI call.
+    researchable: !isWeb && hasWebsite,
   }});
 }
 return out;
@@ -1002,6 +1069,12 @@ $input.all().forEach((item, i) => {
   } else if (!qualifies) {
     status = 'REJECTED';
     reason = `score_below_threshold:${score}`;
+  } else if (lead.offer === 'WEB') {
+    // No website: straight to workflow 45 for a drafted pitch. A website:
+    // workflow 25 audits it first, and only a weak one gets pitched.
+    status = 'QUALIFIED';
+    reason = (s.breakdown && 'no_website' in s.breakdown)
+      ? `web:no_website:${score}` : `web:website_to_audit:${score}`;
   } else if (!lead.researchable) {
     // Qualifies on paper but there is nothing public to write a personal email
     // from. A human can decide; the system will not send something generic.
@@ -1030,7 +1103,7 @@ VALUES ('20_lead_qualification', $1, 'SUCCESS', $2::int, now())
         replacement="={{ [ $execution.id, $input.all().length ] }}",
         execute_once=True)
 
-    b.chain(t, claim, triage, score, decide, move, record)
+    b.chain(t, claim, route, triage, score, decide, move, record)
     return b.build()
 
 
@@ -1447,7 +1520,10 @@ SELECT acq.transition_lead($1::uuid, $2::acq.lead_status, $3, 'AI', $4) AS resul
 
     pause = wait_node(b, "Pace Requests", 3)
 
-    b.chain(t, crawl_settings, claim, loop)
+    gate = nonempty_gate(b, "id")
+    b.chain(t, crawl_settings, claim, gate)
+    b.connect(gate, loop, src_out=0)
+    b.connect(gate, b.node("Nothing To Research", "n8n-nodes-base.noOp", {}, tv=1), src_out=1)
     b.connect(loop, plan, src_out=1)
     b.chain(plan, robots, check_robots, any_pages)
     b.connect(any_pages, expand, src_out=0)
@@ -1717,7 +1793,10 @@ SELECT acq.transition_lead($1::uuid, 'READY_FOR_REVIEW', $2, 'SYSTEM', $3) AS re
     done_auto = b.node("Queued For Sending", "n8n-nodes-base.noOp", {}, tv=1)
     done = b.node("Batch Complete", "n8n-nodes-base.noOp", {}, tv=1)
 
-    b.chain(t, settings, claim, loop)
+    gate = nonempty_gate(b, "id")
+    b.chain(t, settings, claim, gate)
+    b.connect(gate, loop, src_out=0)
+    b.connect(gate, done, src_out=1)
     b.connect(loop, mx, src_out=1)
     b.chain(mx, mx_check, mx_gate)
     b.connect(mx_gate, ai_in, src_out=0)
@@ -1734,6 +1813,377 @@ SELECT acq.transition_lead($1::uuid, 'READY_FOR_REVIEW', $2, 'SYSTEM', $3) AS re
     b.connect(passed, rejected, src_out=1)
     b.chain(rejected, hold)
     b.connect(hold, loop)
+    b.connect(loop, done, src_out=0)
+    return b.build()
+
+
+# ==========================================================================
+# 25 — Website Audit (WEB offer, deterministic, zero AI cost)
+#
+# A WEB lead that already has a website is only worth pitching if the site is
+# weak. This reads ONE public page, the homepage, and records what a visitor
+# would notice: does it load, is it readable on a phone, is it secure, can a
+# customer get in touch from it. robots.txt is honoured exactly as workflow 30
+# honours it. The verdict, rescore and status change are one SQL call.
+# ==========================================================================
+def wf_website_audit():
+    b = Builder("ACQ 25 — Website Audit", "wf25")
+
+    t = cron(b, "Every 30 Minutes (Daytime)", "*/30 6-16 * * 1-6")
+
+    crawl = pg(b, "Load Crawl Settings", """
+SELECT (SELECT value #>> '{}' FROM acq.settings WHERE key = 'discovery.crawl_user_agent') AS user_agent
+""".strip(), execute_once=True)
+
+    claim = pg(b, "Claim Websites To Audit", """
+-- Only WEB leads with a real website and no current audit: the predicate is
+-- inside the claim, so nothing is locked that this workflow cannot use.
+SELECT id, clinic_name, website, domain, category
+FROM acq.claim_leads_for_audit(10, $1)
+""".strip(),
+        replacement="={{ [ 'wf25:' + $execution.id ] }}", always_output=True)
+
+    any_leads = nonempty_gate(b, "id")
+    nothing = b.node("Nothing To Audit", "n8n-nodes-base.noOp", {}, tv=1)
+
+    loop = loop_node(b, "Per Lead", 1)
+
+    plan = code(b, "Plan Audit", r"""
+const l = $input.first().json;
+try {
+  const u = new URL(/^https?:\/\//i.test(l.website) ? l.website : `http://${l.website}`);
+  return [{ json: { ...l, homepage: u.href, origin: u.origin,
+                    robots_url: `${u.origin}/robots.txt`, plan_error: null } }];
+} catch (e) {
+  return [{ json: { ...l, homepage: null, origin: null,
+                    robots_url: 'http://invalid.invalid/robots.txt',
+                    plan_error: 'unparseable_website_url' } }];
+}
+""".strip())
+
+    robots = http(b, "Fetch robots.txt", "GET", "={{ $json.robots_url }}",
+                  headers={"User-Agent": "={{ $('Load Crawl Settings').first().json.user_agent }}"},
+                  timeout=10000, retries=1, on_error="continueRegularOutput",
+                  notes="Missing or unreachable robots.txt is treated as 'allowed'.")
+
+    check = code(b, "Apply robots.txt", r"""
+// Same conservative reading as workflow 30: our own agent or *, Disallow only,
+// and the only question is whether the homepage itself may be fetched.
+const lead = $('Plan Audit').first().json;
+const resp = $input.first().json;
+if (lead.plan_error) return [{ json: { ...lead, allowed: false } }];
+
+const status = resp.statusCode ?? 0;
+const text = (status >= 200 && status < 300) ? String(resp.body ?? '') : '';
+const disallow = [];
+let applies = false;
+for (const raw of text.split(/\r?\n/)) {
+  const line = raw.split('#')[0].trim();
+  if (!line) continue;
+  const [rawKey, ...rest] = line.split(':');
+  const key = rawKey.trim().toLowerCase();
+  const val = rest.join(':').trim();
+  if (key === 'user-agent') applies = (val === '*' || /zenvexa/i.test(val));
+  else if (key === 'disallow' && applies && val) disallow.push(val);
+}
+const path = new URL(lead.homepage).pathname || '/';
+const blocked = disallow.some(d => d === '/' || path.startsWith(d));
+return [{ json: { ...lead, allowed: !blocked, robots_disallow_rules: disallow } }];
+""".strip())
+
+    allowed = if_bool(b, "Homepage Allowed?", "={{ $json.allowed }}")
+
+    stamp = code(b, "Start Timer", r"""
+return [{ json: { ...$input.first().json, started_at: Date.now() } }];
+""".strip())
+
+    fetch = http(b, "Fetch Homepage", "GET", "={{ $json.homepage }}",
+                 headers={"User-Agent": "={{ $('Load Crawl Settings').first().json.user_agent }}",
+                          "Accept": "text/html"},
+                 timeout=20000, retries=1, on_error="continueRegularOutput",
+                 notes="One page per business. Continues on error: a site that does not "
+                       "load is itself the finding.")
+
+    analyze = code(b, "Analyze Website", r"""
+// What a visitor would notice, as booleans the SQL can score. Every issue
+// name here is a weight key in the WEB scoring config (migration 011); an
+// issue with no weight is recorded but scores nothing.
+const lead = $('Start Timer').first().json;
+const resp = $input.first().json;
+const status = Number(resp.statusCode ?? 0);
+const body = typeof resp.body === 'string' ? resp.body : '';
+const elapsed = lead.started_at ? Date.now() - lead.started_at : null;
+const reachable = status >= 200 && status < 400 && body.length > 0;
+
+const text = body
+  .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+  .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+  .replace(/\s+/g, ' ').trim();
+
+const titleM = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+const title = titleM ? titleM[1].replace(/\s+/g, ' ').trim().slice(0, 300) : null;
+const genM = body.match(/<meta[^>]+name=["']generator["'][^>]*content=["']([^"']+)/i);
+
+// The listed URL may be http:// while the site redirects to https. A canonical
+// or og:url on https is good evidence it does.
+const https = /^https:/i.test(lead.homepage) ||
+  /<(?:link[^>]+rel=["']canonical["']|meta[^>]+property=["']og:url["'])[^>]+(?:href|content)=["']https:/i.test(body);
+const hasViewport = /<meta[^>]+name=["']viewport["']/i.test(body);
+const hasTel = /href=["']tel:/i.test(body);
+const hasWa = /(wa\.me\/|api\.whatsapp\.com|whatsapp:\/\/)/i.test(body);
+const hasForm = /<form[\s>]/i.test(body);
+
+const thisYear = new Date().getFullYear();
+let copyrightYear = null;
+for (const m of body.matchAll(/(?:©|&copy;|&#169;|copyright)\s*(?:[^<\d]{0,20})?((?:19|20)\d{2})(?:\s*[-–]\s*((?:19|20)\d{2}))?/gi)) {
+  const y = Number(m[2] || m[1]);
+  if (y >= 1995 && y <= thisYear + 1) copyrightYear = Math.max(copyrightYear ?? 0, y);
+}
+
+// Phrases only. Short page text is NOT evidence: a JavaScript-rendered site
+// ships almost no text in its HTML and would be called "parked" wrongly.
+const parked = reachable &&
+  /(domain (?:is )?for sale|buy this domain|this domain (?:name )?(?:has been|is) (?:registered|parked)|parked (?:free|domain)|website (?:is )?(?:coming soon|under construction)|account (?:has been )?suspended|default web ?site page|index of \/)/i.test(text);
+
+const issues = [];
+if (!reachable) {
+  issues.push('site_unreachable');
+} else {
+  if (parked) issues.push('site_parked');
+  if (!https) issues.push('no_https');
+  if (!hasViewport) issues.push('not_mobile_friendly');
+  if ((elapsed != null && elapsed > 4000) || body.length > 3000000) issues.push('slow_or_heavy');
+  if (copyrightYear && copyrightYear <= thisYear - 3) issues.push('outdated');
+  if (!hasTel && !hasWa && !hasForm) issues.push('no_contact_cta');
+}
+
+// An address published on the business's own homepage, recorded with that
+// page as evidence. Prefer one on the site's own domain.
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const site = (lead.domain || '').replace(/^www\./, '');
+const found = [...new Set((body.match(EMAIL_RE) || []).map(e => e.toLowerCase()))]
+  .filter(e => !/\.(png|jpe?g|gif|svg|webp|css|js|woff2?)$/i.test(e))
+  .filter(e => !/(example|sentry|wixpress|godaddy|wordpress|@2x)/.test(e))
+  .sort((a, b) => (site && b.endsWith(`@${site}`) ? 1 : 0) - (site && a.endsWith(`@${site}`) ? 1 : 0));
+
+return [{ json: {
+  lead_id: lead.id,
+  url: lead.homepage,
+  final_url: lead.homepage,
+  robots_allowed: true,
+  reachable,
+  status_code: status || null,
+  https,
+  has_viewport: hasViewport,
+  title,
+  page_bytes: body.length,
+  elapsed_ms: elapsed,
+  copyright_year: copyrightYear,
+  has_tel_link: hasTel,
+  has_whatsapp_link: hasWa,
+  has_form: hasForm,
+  generator: genM ? genM[1].slice(0, 120) : null,
+  parked,
+  issues,
+  email: reachable ? (found[0] || null) : null,
+  email_url: reachable && found[0] ? lead.homepage : null,
+  raw: { error: resp.error ? String(resp.error.message || resp.error).slice(0, 300) : null,
+         text_chars: text.length },
+}}];
+""".strip())
+
+    blocked = code(b, "Robots Blocked", r"""
+// Not fetched. A URL that cannot even be parsed is a broken listing, which is
+// itself worth telling the owner; a robots.txt refusal is respected and the
+// lead simply goes unscored on site quality.
+const lead = $input.first().json;
+return [{ json: {
+  lead_id: lead.id,
+  url: lead.website,
+  robots_allowed: lead.plan_error ? null : false,
+  reachable: lead.plan_error ? false : null,
+  issues: lead.plan_error ? ['site_unreachable'] : [],
+  raw: { reason: lead.plan_error || 'robots_disallow', rules: lead.robots_disallow_rules || [] },
+}}];
+""".strip())
+
+    record = pg(b, "Record Audit", "SELECT acq.record_website_audit($1::jsonb) AS result",
+                replacement="={{ JSON.stringify(Object.assign({}, $json, { execution_id: $execution.id })) }}",
+                notes="Stores the audit, keeps any email found with its page as evidence, "
+                      "rescores (BLENDED) and either keeps the lead QUALIFIED or rejects it "
+                      "— one transaction.")
+
+    pause = wait_node(b, "Pace Requests", 3)
+    done = b.node("Audit Sweep Complete", "n8n-nodes-base.noOp", {}, tv=1)
+
+    b.chain(t, crawl, claim, any_leads)
+    b.connect(any_leads, loop, src_out=0)
+    b.connect(any_leads, nothing, src_out=1)
+    b.connect(loop, plan, src_out=1)
+    b.chain(plan, robots, check, allowed)
+    b.connect(allowed, stamp, src_out=0)
+    b.chain(stamp, fetch, analyze, record)
+    b.connect(allowed, blocked, src_out=1)
+    b.connect(blocked, record)
+    b.chain(record, pause)
+    b.connect(pause, loop)
+    b.connect(loop, done, src_out=0)
+    return b.build()
+
+
+# ==========================================================================
+# 45 — Web Pitch Drafts (WEB offer)
+#
+# Writes the WhatsApp message a person will send by hand from the dashboard.
+# Nothing here sends anything. The daily draft cap lives in the claim
+# function; a failed or rejected AI draft falls back to the configured
+# template inside acq.record_web_pitch(), so an AI outage never stalls the
+# queue and never lets an unchecked draft through.
+# ==========================================================================
+def wf_web_pitch():
+    b = Builder("ACQ 45 — Web Pitch Drafts", "wf45")
+
+    t = cron(b, "Every 30 Minutes (Business Hours)", "*/30 9-18 * * 1-6")
+
+    settings = pg(b, "Load Settings", """
+SELECT
+  (SELECT  value #>> '{}'          FROM acq.settings WHERE key = 'web.portfolio_url')        AS portfolio_url,
+  (SELECT  value #>> '{}'          FROM acq.settings WHERE key = 'web.message_language')     AS language,
+  (SELECT (value #>> '{}')::int    FROM acq.settings WHERE key = 'web.max_drafts_per_run')   AS max_per_run,
+  (SELECT  value                   FROM acq.settings WHERE key = 'guardrails.banned_phrases') AS banned
+""".strip(), execute_once=True)
+
+    claim = pg(b, "Claim Leads To Pitch", """
+-- The daily cap and every eligibility rule are inside the claim (migration
+-- 011). The audit, if there is one, rides along for the prompt.
+SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.lead_score,
+       l.raw #>> '{GOOGLE_PLACES,rating}'          AS rating,
+       l.raw #>> '{GOOGLE_PLACES,userRatingCount}' AS review_count,
+       acq.manual_channel(l)                      AS channel,
+       (SELECT jsonb_build_object('reachable', a.reachable, 'issues', a.issues,
+                                  'title', a.title, 'url', a.url)
+          FROM acq.website_audits a
+         WHERE a.lead_id = l.id AND a.is_current)  AS audit
+FROM acq.claim_leads_for_web_pitch($2::int, $1) l
+""".strip(),
+        replacement="={{ [ 'wf45:' + $execution.id, ($json.max_per_run || 8) ] }}",
+        always_output=True)
+
+    any_leads = nonempty_gate(b, "id")
+    nothing = b.node("Nothing To Draft", "n8n-nodes-base.noOp", {}, tv=1)
+
+    loop = loop_node(b, "Per Lead", 1)
+
+    ai_in = code(b, "Build AI Input", r"""
+const j = $input.first().json;
+const cfg = $('Load Settings').first().json;
+const chan = j.channel || {};
+const pretty = (s) => String(s || '').toLowerCase().replace(/_/g, ' ');
+const socialOnly = !!j.website && !j.audit;
+
+return [{ json: {
+  prompt_key: 'web_pitch_message',
+  purpose: 'WEB_PITCH',
+  lead_id: j.id,
+  variables: {
+    lead_json: {
+      business_name: j.clinic_name,
+      type_of_business: pretty(j.category),
+      area: j.area, city: j.city,
+      google_rating: j.rating ? Number(j.rating) : null,
+      google_review_count: j.review_count ? Number(j.review_count) : null,
+      website: socialOnly ? null : (j.website || null),
+      social_page_only: socialOnly,
+    },
+    audit_json: j.audit || null,
+    portfolio_url_or_none: cfg.portfolio_url || '(none — include no link)',
+    channel_note: chan.channel === 'PHONE_CALL'
+      ? 'This number is a landline. Write it as what to say in the first 20 seconds of a phone call, in the same structure.'
+      : 'This will be sent as a WhatsApp message.',
+    language: cfg.language || 'English',
+  },
+}}];
+""".strip())
+
+    ai = call_workflow(b, "AI: Draft Pitch", "ACQ 01 — AI Call")
+
+    check = code(b, "Check Draft", r"""
+// A person reads every one of these before sending, so this is not the last
+// line of defence — but it is the cheap one. A draft that fails is not
+// queued: its message is dropped and acq.record_web_pitch() uses the fixed
+// template instead, with the reasons kept as notes.
+const lead = $('Per Lead').first().json;
+const cfg = $('Load Settings').first().json;
+const res = $input.first().json;
+
+const base = { lead_id: lead.id, execution_id: $execution.id };
+if (!res.ok) return [{ json: { ...base, message: null, notes: `ai_failed:${res.error}` } }];
+
+const d = res.data || {};
+const msg = String(d.message || '').trim();
+const reasons = [];
+
+const banned = Array.isArray(cfg.banned) ? cfg.banned : [];
+for (const phrase of banned) {
+  if (msg.toLowerCase().includes(String(phrase).toLowerCase().trim())) reasons.push(`banned_phrase:${phrase}`);
+}
+if (msg.length < 150) reasons.push(`too_short:${msg.length}`);
+if (msg.length > 750) reasons.push(`too_long:${msg.length}`);
+if (/\b(?:PKR|Rs\.?|USD|\$|€|£)\s?\d/i.test(msg) || /\b\d[\d,]*\s?(?:rupees|rs)\b/i.test(msg))
+  reasons.push('contains_price');
+if (/\b\d+\s?%|\b\d+x\b/i.test(msg)) reasons.push('unsupported_statistic');
+if (/\b(I called|I visited|I spoke|we spoke|as discussed|referred by|your friend)\b/i.test(msg))
+  reasons.push('fabricated_prior_contact');
+if (/\b(limited time|only today|hurry|last chance|act now)\b/i.test(msg)) reasons.push('false_urgency');
+if ((msg.match(/\?/g) || []).length > 2) reasons.push('too_many_questions');
+
+const portfolio = String(cfg.portfolio_url || '').trim().replace(/\/+$/, '').toLowerCase();
+const links = msg.match(/(?:https?:\/\/|www\.)\S+/gi) || [];
+for (const l of links) {
+  const norm = l.replace(/[).,!?]+$/, '').replace(/\/+$/, '').toLowerCase();
+  if (!portfolio || !norm.includes(portfolio.replace(/^https?:\/\//, '')))
+    reasons.push(`unexpected_link:${l.slice(0, 60)}`);
+}
+const conf = Number(d.confidence ?? 0);
+if (conf < 0.3) reasons.push(`low_confidence:${conf}`);
+
+if (reasons.length) {
+  return [{ json: { ...base, message: null,
+                    notes: `ai_draft_rejected:${reasons.join(',')}`.slice(0, 500),
+                    rejected_draft: msg.slice(0, 1000) } }];
+}
+return [{ json: {
+  ...base,
+  message: msg,
+  personalization_reason: d.personalization_reason || '',
+  confidence: conf,
+  notes: d.notes || null,
+  model: res.model,
+  prompt_version: res.prompt_version,
+}}];
+""".strip())
+
+    record = pg(b, "Record Draft", "SELECT acq.record_web_pitch($1::jsonb) AS result",
+                replacement="={{ JSON.stringify($json) }}",
+                notes="Inserts the queue row (or the template, if the draft was dropped) "
+                      "and moves the lead to READY_FOR_REVIEW. Idempotent per lead.")
+
+    done = pg(b, "Record Run", """
+INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, finished_at)
+VALUES ('45_web_pitch', $1, 'SUCCESS',
+        (SELECT count(*) FROM acq.manual_outreach
+          WHERE step_no = 0 AND created_at >= now() - interval '1 hour'),
+        now())
+""".strip(), replacement="={{ [ $execution.id ] }}", execute_once=True)
+
+    b.chain(t, settings, claim, any_leads)
+    b.connect(any_leads, loop, src_out=0)
+    b.connect(any_leads, nothing, src_out=1)
+    b.connect(loop, ai_in, src_out=1)
+    b.chain(ai_in, ai, check, record)
+    b.connect(record, loop)
     b.connect(loop, done, src_out=0)
     return b.build()
 
@@ -1883,7 +2333,10 @@ return [{ json: { wait_seconds: 40 + Math.floor(Math.random() * 120) } }];
 
     done = b.node("Send Batch Complete", "n8n-nodes-base.noOp", {}, tv=1)
 
-    b.chain(t, camps, claim, loop)
+    gate = nonempty_gate(b, "email_id")
+    b.chain(t, camps, claim, gate)
+    b.connect(gate, loop, src_out=0)
+    b.connect(gate, done, src_out=1)
     b.connect(loop, recheck, src_out=1)
     b.chain(recheck, sendable)
     b.connect(sendable, render, src_out=0)
@@ -2436,7 +2889,10 @@ VALUES ('80_followup_engine', $3, 'Guardrails', $4::uuid, $2, $5::jsonb)
 
     done = b.node("Follow-Up Sweep Complete", "n8n-nodes-base.noOp", {}, tv=1)
 
-    b.chain(t, due, loop)
+    gate = nonempty_gate(b, "lead_id")
+    b.chain(t, due, gate)
+    b.connect(gate, loop, src_out=0)
+    b.connect(gate, done, src_out=1)
     b.connect(loop, ai_in, src_out=1)
     b.chain(ai_in, ai, guard, ok)
     b.connect(ok, queue, src_out=0)
@@ -2940,8 +3396,10 @@ WORKFLOWS = [
     ("01_ai_call",              wf_ai_call),
     ("10_lead_discovery",       wf_discovery),
     ("20_lead_qualification",   wf_qualification),
+    ("25_website_audit",        wf_website_audit),
     ("30_ai_research",          wf_research),
     ("40_personalization",      wf_personalization),
+    ("45_web_pitch",            wf_web_pitch),
     ("50_outreach_send",        wf_send),
     ("60_inbox_monitor",        wf_inbox),
     ("70_reply_classification", wf_classification),

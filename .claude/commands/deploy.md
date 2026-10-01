@@ -40,7 +40,7 @@ credential here allowed to run DDL) and `psql` on PATH.
    ```
    Expect 404. A 200 means the schema is exposed and every lead is public.
 3. **n8n** — point `acq-postgres` at the session pooler (`:5432`, SSL require,
-   user `acq_n8n.<ref>`), import the 13 workflows, fix credential placeholders,
+   user `acq_n8n.<ref>`), import the 15 workflows, fix credential placeholders,
    set the error workflow, write the webhook URLs back into `acq.settings`.
 4. **Vercel** — Root Directory `dashboard`. Set `ACQ_DATABASE_URL` (transaction
    pooler, as `acq_dashboard`), the three `NEXT_PUBLIC_*` vars, and

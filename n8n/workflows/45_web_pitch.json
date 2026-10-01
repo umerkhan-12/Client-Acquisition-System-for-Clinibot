@@ -1,0 +1,370 @@
+{
+  "name": "ACQ 45 \u2014 Web Pitch Drafts",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 9-18 * * 1-6"
+            }
+          ]
+        }
+      },
+      "id": "wf45-00",
+      "name": "Every 30 Minutes (Business Hours)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  (SELECT  value #>> '{}'          FROM acq.settings WHERE key = 'web.portfolio_url')        AS portfolio_url,\n  (SELECT  value #>> '{}'          FROM acq.settings WHERE key = 'web.message_language')     AS language,\n  (SELECT (value #>> '{}')::int    FROM acq.settings WHERE key = 'web.max_drafts_per_run')   AS max_per_run,\n  (SELECT  value                   FROM acq.settings WHERE key = 'guardrails.banned_phrases') AS banned",
+        "options": {}
+      },
+      "id": "wf45-01",
+      "name": "Load Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- The daily cap and every eligibility rule are inside the claim (migration\n-- 011). The audit, if there is one, rides along for the prompt.\nSELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.lead_score,\n       l.raw #>> '{GOOGLE_PLACES,rating}'          AS rating,\n       l.raw #>> '{GOOGLE_PLACES,userRatingCount}' AS review_count,\n       acq.manual_channel(l)                      AS channel,\n       (SELECT jsonb_build_object('reachable', a.reachable, 'issues', a.issues,\n                                  'title', a.title, 'url', a.url)\n          FROM acq.website_audits a\n         WHERE a.lead_id = l.id AND a.is_current)  AS audit\nFROM acq.claim_leads_for_web_pitch($2::int, $1) l",
+        "options": {
+          "queryReplacement": "={{ [ 'wf45:' + $execution.id, ($json.max_per_run || 8) ] }}"
+        }
+      },
+      "id": "wf45-02",
+      "name": "Claim Leads To Pitch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
+      "id": "wf45-03",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf45-04",
+      "name": "Nothing To Draft",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "wf45-05",
+      "name": "Per Lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const j = $input.first().json;\nconst cfg = $('Load Settings').first().json;\nconst chan = j.channel || {};\nconst pretty = (s) => String(s || '').toLowerCase().replace(/_/g, ' ');\nconst socialOnly = !!j.website && !j.audit;\n\nreturn [{ json: {\n  prompt_key: 'web_pitch_message',\n  purpose: 'WEB_PITCH',\n  lead_id: j.id,\n  variables: {\n    lead_json: {\n      business_name: j.clinic_name,\n      type_of_business: pretty(j.category),\n      area: j.area, city: j.city,\n      google_rating: j.rating ? Number(j.rating) : null,\n      google_review_count: j.review_count ? Number(j.review_count) : null,\n      website: socialOnly ? null : (j.website || null),\n      social_page_only: socialOnly,\n    },\n    audit_json: j.audit || null,\n    portfolio_url_or_none: cfg.portfolio_url || '(none \u2014 include no link)',\n    channel_note: chan.channel === 'PHONE_CALL'\n      ? 'This number is a landline. Write it as what to say in the first 20 seconds of a phone call, in the same structure.'\n      : 'This will be sent as a WhatsApp message.',\n    language: cfg.language || 'English',\n  },\n}}];"
+      },
+      "id": "wf45-06",
+      "name": "Build AI Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_ID__ACQ 01 \u2014 AI Call",
+          "mode": "list",
+          "cachedResultName": "ACQ 01 \u2014 AI Call"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "wf45-07",
+      "name": "AI: Draft Pitch",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        300
+      ],
+      "notes": "After import, point this at the 'ACQ 01 \u2014 AI Call' workflow.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// A person reads every one of these before sending, so this is not the last\n// line of defence \u2014 but it is the cheap one. A draft that fails is not\n// queued: its message is dropped and acq.record_web_pitch() uses the fixed\n// template instead, with the reasons kept as notes.\nconst lead = $('Per Lead').first().json;\nconst cfg = $('Load Settings').first().json;\nconst res = $input.first().json;\n\nconst base = { lead_id: lead.id, execution_id: $execution.id };\nif (!res.ok) return [{ json: { ...base, message: null, notes: `ai_failed:${res.error}` } }];\n\nconst d = res.data || {};\nconst msg = String(d.message || '').trim();\nconst reasons = [];\n\nconst banned = Array.isArray(cfg.banned) ? cfg.banned : [];\nfor (const phrase of banned) {\n  if (msg.toLowerCase().includes(String(phrase).toLowerCase().trim())) reasons.push(`banned_phrase:${phrase}`);\n}\nif (msg.length < 150) reasons.push(`too_short:${msg.length}`);\nif (msg.length > 750) reasons.push(`too_long:${msg.length}`);\nif (/\\b(?:PKR|Rs\\.?|USD|\\$|\u20ac|\u00a3)\\s?\\d/i.test(msg) || /\\b\\d[\\d,]*\\s?(?:rupees|rs)\\b/i.test(msg))\n  reasons.push('contains_price');\nif (/\\b\\d+\\s?%|\\b\\d+x\\b/i.test(msg)) reasons.push('unsupported_statistic');\nif (/\\b(I called|I visited|I spoke|we spoke|as discussed|referred by|your friend)\\b/i.test(msg))\n  reasons.push('fabricated_prior_contact');\nif (/\\b(limited time|only today|hurry|last chance|act now)\\b/i.test(msg)) reasons.push('false_urgency');\nif ((msg.match(/\\?/g) || []).length > 2) reasons.push('too_many_questions');\n\nconst portfolio = String(cfg.portfolio_url || '').trim().replace(/\\/+$/, '').toLowerCase();\nconst links = msg.match(/(?:https?:\\/\\/|www\\.)\\S+/gi) || [];\nfor (const l of links) {\n  const norm = l.replace(/[).,!?]+$/, '').replace(/\\/+$/, '').toLowerCase();\n  if (!portfolio || !norm.includes(portfolio.replace(/^https?:\\/\\//, '')))\n    reasons.push(`unexpected_link:${l.slice(0, 60)}`);\n}\nconst conf = Number(d.confidence ?? 0);\nif (conf < 0.3) reasons.push(`low_confidence:${conf}`);\n\nif (reasons.length) {\n  return [{ json: { ...base, message: null,\n                    notes: `ai_draft_rejected:${reasons.join(',')}`.slice(0, 500),\n                    rejected_draft: msg.slice(0, 1000) } }];\n}\nreturn [{ json: {\n  ...base,\n  message: msg,\n  personalization_reason: d.personalization_reason || '',\n  confidence: conf,\n  notes: d.notes || null,\n  model: res.model,\n  prompt_version: res.prompt_version,\n}}];"
+      },
+      "id": "wf45-08",
+      "name": "Check Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_web_pitch($1::jsonb) AS result",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "id": "wf45-09",
+      "name": "Record Draft",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2240,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Inserts the queue row (or the template, if the draft was dropped) and moves the lead to READY_FOR_REVIEW. Idempotent per lead.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, finished_at)\nVALUES ('45_web_pitch', $1, 'SUCCESS',\n        (SELECT count(*) FROM acq.manual_outreach\n          WHERE step_no = 0 AND created_at >= now() - interval '1 hour'),\n        now())",
+        "options": {
+          "queryReplacement": "={{ [ $execution.id ] }}"
+        }
+      },
+      "id": "wf45-10",
+      "name": "Record Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2460,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes (Business Hours)": {
+      "main": [
+        [
+          {
+            "node": "Load Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Settings": {
+      "main": [
+        [
+          {
+            "node": "Claim Leads To Pitch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Leads To Pitch": {
+      "main": [
+        [
+          {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing To Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Per Lead": {
+      "main": [
+        [
+          {
+            "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Input": {
+      "main": [
+        [
+          {
+            "node": "AI: Draft Pitch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Draft Pitch": {
+      "main": [
+        [
+          {
+            "node": "Check Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Draft": {
+      "main": [
+        [
+          {
+            "node": "Record Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Draft": {
+      "main": [
+        [
+          {
+            "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "ACQ 00 \u2014 Error Handler"
+  },
+  "active": false,
+  "meta": {
+    "acqWorkflowKey": "wf45"
+  }
+}

@@ -732,6 +732,215 @@ test("rejects an overlong follow-up", () => {
   ok(r.reasons.some((x) => x.startsWith("too_long_for_followup")), "reason");
 });
 
+// ============================================================ WEB offer
+
+group("10 — WEB discovery tasks");
+
+function overpass(task) {
+  return runNode("10_lead_discovery", "Build Overpass Query", { input: [task] })[0].json.overpass_query;
+}
+const webTask = {
+  id: "T-web", market_code: "PK", city: "Karachi", area: "Saddar", offer: "WEB",
+  category: "PRINTING", priority_tier: 1,
+  bbox: { lat: 24.85, lng: 67.03, radius_m: 2500 },
+  osm_selectors: ['["shop"~"^(copyshop|printing)$"]', '["craft"="printer"]'],
+};
+
+test("a WEB task queries its own selectors, not healthcare", () => {
+  const q = overpass(webTask);
+  ok(q.includes('nwr["shop"~"^(copyshop|printing)$"](around:2500,24.85,67.03);'), q);
+  ok(q.includes('nwr["craft"="printer"](around:2500,24.85,67.03);'), q);
+  ok(!q.includes("healthcare"), "no healthcare clause");
+});
+
+test("a clinic task still gets the healthcare query", () => {
+  const q = overpass({ ...webTask, offer: "CLINIBOT", osm_selectors: null });
+  ok(q.includes('nwr["healthcare"]'), q);
+});
+
+test("a malformed selector fails loudly instead of reaching Overpass", () => {
+  throws(() => overpass({ ...webTask, osm_selectors: ['["shop"="x"]);out;('] }),
+         "unusable osm_selectors", "should refuse");
+  throws(() => overpass({ ...webTask, osm_selectors: [] }), "unusable osm_selectors",
+         "empty selectors should refuse");
+});
+
+test("WEB OSM results keep the task's category and carry the offer", () => {
+  const out = runNode("10_lead_discovery", "Normalize OSM Results", {
+    input: [{ statusCode: 200, body: { elements: [
+      { type: "node", id: 9, tags: { name: "Ali Printers", shop: "copyshop", phone: "0300 1234567" } },
+    ] } }],
+    nodes: { "Build Overpass Query": webTask, "Check Budget + Settings": osmSettings },
+  });
+  eq(out[0].json.category, "PRINTING", "category");
+  eq(out[0].json.priority_tier, 1, "tier");
+  eq(out[0].json.offer, "WEB", "offer");
+});
+
+test("a clinic OSM result is tagged CLINIBOT by default", () => {
+  const out = normalizeOsm([{ type: "node", id: 5, tags: { name: "Smile Dental", amenity: "dentist" } }]);
+  eq(out[0].json.offer, "CLINIBOT", "offer");
+});
+
+test("WEB Places results keep the task's category and carry the offer", () => {
+  const out = runNode("10_lead_discovery", "Normalize Place Details", {
+    input: [{ statusCode: 200, body: {
+      id: "P1", displayName: { text: "Trust Printing Press" }, businessStatus: "OPERATIONAL",
+      nationalPhoneNumber: "0300 7654321", userRatingCount: 55, rating: 4.6,
+    } }],
+    nodes: { "Per Task": webTask },
+  });
+  // "Trust" is a clinic-pipeline exclusion; a printing press named Trust is fine.
+  eq(out.length, 1, "kept");
+  eq(out[0].json.category, "PRINTING", "category");
+  eq(out[0].json.offer, "WEB", "offer");
+  eq(out[0].json.website, null, "no website");
+});
+
+group("20 — offer-aware triage and decision");
+
+function triageLeads(leads) {
+  return runNode("20_lead_qualification", "Deterministic Triage", { input: leads }).map((o) => o.json);
+}
+
+test("a WEB lead with a phone and no website is not disqualified", () => {
+  const [t] = triageLeads([{ id: "a", clinic_name: "Ali Printers", phone: "+923001234567", offer: "WEB" }]);
+  eq(t.disqualified, false, "disqualified");
+  eq(t.researchable, false, "never sent to AI research");
+});
+
+test("a clinic with nothing to research is still rejected on the Clinibot path", () => {
+  const [t] = triageLeads([{ id: "b", clinic_name: "Some Clinic", phone: "+922100000000", offer: "CLINIBOT" }]);
+  ok(t.disqualify_reasons.includes("nothing_to_research"), JSON.stringify(t));
+});
+
+test("a WEB lead with only an email cannot be pitched by hand", () => {
+  const [t] = triageLeads([{ id: "c", clinic_name: "Mail Only Co", public_email: "a@b.pk", offer: "WEB" }]);
+  ok(t.disqualify_reasons.includes("no_phone_for_manual_outreach"), JSON.stringify(t));
+});
+
+test("decision sends no-website leads to drafting and sited ones to audit", () => {
+  const triaged = [
+    { id: "n", clinic_name: "No Site", offer: "WEB", disqualified: false, disqualify_reasons: [] },
+    { id: "s", clinic_name: "Has Site", offer: "WEB", disqualified: false, disqualify_reasons: [] },
+  ];
+  const out = runNode("20_lead_qualification", "Decide Next Status", {
+    input: [
+      { score: { score: 70, qualifies: true, breakdown: { no_website: 35 } } },
+      { score: { score: 30, qualifies: true, breakdown: { has_phone: 6 } } },
+    ],
+    nodes: { "Deterministic Triage": triaged },
+  }).map((o) => o.json);
+  eq(out[0].status, "QUALIFIED", "no site status");
+  ok(out[0].reason.startsWith("web:no_website"), out[0].reason);
+  eq(out[1].status, "QUALIFIED", "site status");
+  ok(out[1].reason.startsWith("web:website_to_audit"), out[1].reason);
+});
+
+group("25 — Website audit");
+
+const auditLead = { id: "L9", domain: "aliprinters.pk", homepage: "http://aliprinters.pk/",
+                    started_at: Date.now() - 900 };
+function analyze(resp, lead = auditLead) {
+  return runNode("25_website_audit", "Analyze Website", {
+    input: [resp], nodes: { "Start Timer": lead },
+  })[0].json;
+}
+const year = new Date().getFullYear();
+
+test("an old, insecure, desktop-only site with no way to call is weak on every count", () => {
+  const a = analyze({ statusCode: 200, body:
+    `<html><head><title>Ali Printers</title></head><body><h1>Welcome to Ali Printers</h1>
+     <p>We print visiting cards, banners and flex. Contact info@gmail.com or orders@aliprinters.pk</p>
+     <footer>&copy; ${year - 6} Ali Printers</footer></body></html>` });
+  eq(a.reachable, true, "reachable");
+  eq(a.issues, ["no_https", "not_mobile_friendly", "outdated", "no_contact_cta"], "issues");
+  eq(a.copyright_year, year - 6, "copyright year");
+  eq(a.email, "orders@aliprinters.pk", "prefers the site's own domain");
+  eq(a.email_url, "http://aliprinters.pk/", "email evidence is the page it was read from");
+});
+
+test("a modern site with a call button has no issues", () => {
+  const a = analyze({ statusCode: 200, body:
+    `<html><head><meta name="viewport" content="width=device-width">
+     <link rel="canonical" href="https://aliprinters.pk/"><title>Ali</title></head>
+     <body><a href="tel:+923001234567">Call</a> &copy; 2019-${year} Ali</body></html>` });
+  eq(a.https, true, "https from canonical");
+  eq(a.issues, [], "issues");
+  eq(a.copyright_year, year, "uses the later year of a range");
+});
+
+test("a site that does not load is reported as unreachable, with no email", () => {
+  const a = analyze({ error: { message: "getaddrinfo ENOTFOUND aliprinters.pk" } });
+  eq(a.reachable, false, "reachable");
+  eq(a.issues, ["site_unreachable"], "issues");
+  eq(a.email, null, "email");
+});
+
+test("a parked domain is flagged; a JavaScript shell with little text is not", () => {
+  const parked = analyze({ statusCode: 200, body:
+    `<html><head><meta name="viewport" content="x"></head><body>This domain is for sale! Buy this domain.</body></html>` });
+  ok(parked.issues.includes("site_parked"), JSON.stringify(parked.issues));
+  const spa = analyze({ statusCode: 200, body:
+    `<html><head><meta name="viewport" content="x"><title>App</title></head>
+     <body><div id="root"></div><a href="https://wa.me/923001234567">WhatsApp</a></body></html>` });
+  ok(!spa.issues.includes("site_parked"), JSON.stringify(spa.issues));
+});
+
+test("robots.txt Disallow: / keeps the homepage unfetched", () => {
+  const out = runNode("25_website_audit", "Apply robots.txt", {
+    input: [{ statusCode: 200, body: "User-agent: *\nDisallow: /" }],
+    nodes: { "Plan Audit": { ...auditLead, plan_error: null } },
+  })[0].json;
+  eq(out.allowed, false, "allowed");
+});
+
+group("45 — Web pitch draft check");
+
+const pitchCfg = { portfolio_url: "https://zenvexa.tech", banned: ["guaranteed", "act now"] };
+const pitchLead = { id: "W1", channel: { channel: "WHATSAPP", to_value: "+923001234567" } };
+const goodPitch =
+  "Assalamualaikum! I came across Ali Printers on Google Maps and noticed you don't have a " +
+  "website yet. I'm Umer, a web developer. I build simple mobile-friendly sites where customers " +
+  "can see your printing services and message you on WhatsApp in one tap. I'd be happy to make " +
+  "a free sample for Ali Printers first. Would you like me to make one?\nhttps://zenvexa.tech";
+function pcheck(data, ok_ = true) {
+  return runNode("45_web_pitch", "Check Draft", {
+    input: [{ ok: ok_, data, error: ok_ ? undefined : "gemini_http_500",
+              model: "gemini-2.5-flash", prompt_version: "v1" }],
+    nodes: { "Per Lead": pitchLead, "Load Settings": pitchCfg },
+  })[0].json;
+}
+
+test("a good draft passes with the portfolio link", () => {
+  const r = pcheck({ message: goodPitch, personalization_reason: "no website", confidence: 0.8 });
+  eq(r.message, goodPitch, "message kept");
+  eq(r.lead_id, "W1", "lead");
+});
+
+test("a price, a statistic or a stray link drops the draft to the template", () => {
+  for (const bad of [
+    goodPitch + " Only Rs 15,000!",
+    goodPitch.replace("one tap", "one tap and get 40% more orders"),
+    goodPitch + " See also https://example.com/offer",
+  ]) {
+    const r = pcheck({ message: bad, personalization_reason: "x", confidence: 0.9 });
+    eq(r.message, null, `rejected: ${bad.slice(-40)}`);
+    ok(r.notes.startsWith("ai_draft_rejected"), r.notes);
+  }
+});
+
+test("banned hype and fake familiarity are rejected", () => {
+  eq(pcheck({ message: goodPitch + " Results guaranteed.", confidence: 0.9 }).message, null, "banned");
+  eq(pcheck({ message: "As discussed, " + goodPitch, confidence: 0.9 }).message, null, "fake contact");
+});
+
+test("a failed AI call becomes the template, never an empty queue row", () => {
+  const r = pcheck({}, false);
+  eq(r.message, null, "message");
+  ok(r.notes.startsWith("ai_failed"), r.notes);
+});
+
 // ============================================================ summary
 
 console.log(

@@ -518,13 +518,60 @@
       ]
     },
     {
-      "parameters": {},
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Anything Claimed?-c",
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true
+      },
       "id": "wf30-24",
+      "name": "Anything Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5540,
+        300
+      ],
+      "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {},
+      "id": "wf30-25",
+      "name": "Nothing To Research",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        5760,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wf30-26",
       "name": "Research Sweep Complete",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
       "position": [
-        5540,
+        5980,
         300
       ]
     }
@@ -556,7 +603,25 @@
       "main": [
         [
           {
+            "node": "Anything Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything Claimed?": {
+      "main": [
+        [
+          {
             "node": "Per Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing To Research",
             "type": "main",
             "index": 0
           }
