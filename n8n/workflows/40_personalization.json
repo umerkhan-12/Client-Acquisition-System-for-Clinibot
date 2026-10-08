@@ -132,7 +132,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const lead = $('Per Lead').first().json;\nconst r = $input.first().json;\nconst body = r.body ?? r;\n\n// DNS status 0 = NOERROR. Answer records of type 15 are MX records.\nconst answers = body?.Answer || [];\nconst hasMx = body?.Status === 0 && answers.some(a => a.type === 15);\n\n// A lookup that itself failed is not evidence of a bad domain, so it is treated\n// as inconclusive and allowed through rather than silently dropping the lead.\nconst inconclusive = r.statusCode && (r.statusCode < 200 || r.statusCode >= 300);\n\nreturn [{ json: {\n  ...lead,\n  mx_ok: hasMx || inconclusive,\n  mx_checked: !inconclusive,\n  mx_records: answers.filter(a => a.type === 15).map(a => a.data),\n}}];"
+        "jsCode": "const lead = $('Per Lead').first().json;\nconst r = $input.first().json;\nconst body = r.body ?? r.data ?? r;\n\n// DNS status 0 = NOERROR. Answer records of type 15 are MX records.\nconst answers = body?.Answer || [];\nconst hasMx = body?.Status === 0 && answers.some(a => a.type === 15);\n\n// A lookup that itself failed is not evidence of a bad domain, so it is treated\n// as inconclusive and allowed through rather than silently dropping the lead.\nconst inconclusive = r.statusCode && (r.statusCode < 200 || r.statusCode >= 300);\n\nreturn [{ json: {\n  ...lead,\n  mx_ok: hasMx || inconclusive,\n  mx_checked: !inconclusive,\n  mx_records: answers.filter(a => a.type === 15).map(a => a.data),\n}}];"
       },
       "id": "wf40-05",
       "name": "Evaluate MX",

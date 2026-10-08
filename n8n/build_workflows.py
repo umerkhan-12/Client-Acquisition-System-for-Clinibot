@@ -268,6 +268,22 @@ function sanitizeSchema(s) {
 }
 """.strip()
 
+# n8n 2.x runs Code nodes in a task-runner sandbox with no URL global, so
+# `new URL(...)` throws on every call. That made workflow 25 record every
+# website as unparseable and "unreachable". This parses the parts we need.
+PARSE_URL_JS = r"""
+function parseUrl(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+  const m = s.match(/^(https?):\/\/([A-Za-z0-9.-]+(?::\d+)?)(\/[^?#\s]*)?/i);
+  if (!m || !m[2].includes('.')) return null;
+  const origin = `${m[1].toLowerCase()}://${m[2].toLowerCase()}`;
+  const path = m[3] || '/';
+  return { origin, path, href: origin + path };
+}
+""".strip()
+
 RENDER_TEMPLATE_JS = """
 function render(tpl, vars) {
   return String(tpl).replace(/\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}/g, (m, k) => {
@@ -456,7 +472,7 @@ return [{
 const ctx = $('Build Request').first().json;
 const resp = $input.first().json;
 const status = resp.statusCode ?? 200;
-const body = resp.body ?? resp;
+const body = resp.body ?? resp.data ?? resp;
 
 function fail(reason, detail) {
   return [{ json: { ...ctx, ok: false, valid: false, error: reason,
@@ -749,7 +765,7 @@ return [{ json: { ...t, overpass_query: q } }];
 const task = $('Build Overpass Query').first().json;
 const maxNew = $('Check Budget + Settings').first().json.max_new || 60;
 const resp = $input.first().json;
-const body = resp.body ?? resp;
+const body = resp.body ?? resp.data ?? resp;
 const elements = body.elements || [];
 
 // Tag-driven category assignment. Falls back to name keywords because OSM in
@@ -862,7 +878,7 @@ return out;
     places_cands = code(b, "Collect Place IDs", r"""
 const task = $('Per Task').first().json;
 const resp = $input.first().json;
-const body = resp.body ?? resp;
+const body = resp.body ?? resp.data ?? resp;
 
 if (resp.statusCode && resp.statusCode >= 300) {
   throw new Error(`Places search failed ${resp.statusCode}: ` +
@@ -918,7 +934,7 @@ function categorize(type, n) {
 const out = [];
 for (const item of $input.all()) {
 const resp = item.json;
-const p = resp.body ?? resp;
+const p = resp.body ?? resp.data ?? resp;
 
 if (!p || !p.id) continue;
 if (p.businessStatus && p.businessStatus !== 'OPERATIONAL') continue;
@@ -1289,15 +1305,11 @@ FROM acq.claim_leads_for_research(
 
     loop = loop_node(b, "Per Lead", 1)
 
-    plan = code(b, "Plan Fetch", r"""
+    plan = code(b, "Plan Fetch", PARSE_URL_JS + "\n" + r"""
 const l = $input.first().json;
-let origin;
-try {
-  origin = new URL(l.website.startsWith('http') ? l.website : `https://${l.website}`).origin;
-} catch (e) {
-  return [{ json: { ...l, fetch_error: 'unparseable_website_url', pages: [] } }];
-}
-return [{ json: { ...l, origin, robots_url: `${origin}/robots.txt` } }];
+const u = parseUrl(l.website);
+if (!u) return [{ json: { ...l, fetch_error: 'unparseable_website_url', pages: [] } }];
+return [{ json: { ...l, origin: u.origin, robots_url: `${u.origin}/robots.txt` } }];
 """.strip())
 
     robots = http(b, "Fetch robots.txt", "GET", "={{ $json.robots_url }}",
@@ -1324,7 +1336,7 @@ const maxPages = cfg.max_pages || 3;
 if (lead.fetch_error) return [{ json: { ...lead, allowed_urls: [], robots_allowed: false } }];
 
 const status = resp.statusCode ?? 0;
-const text = (status >= 200 && status < 300) ? String(resp.body ?? '') : '';
+const text = (status >= 200 && status < 300) ? String(resp.body ?? resp.data ?? '') : '';
 
 const disallow = [];
 let applies = false;
@@ -1402,7 +1414,8 @@ for (const item of $input.all()) {
   const url = r.url || r.request?.uri || '';
   const status = r.statusCode ?? 0;
   if (status < 200 || status >= 300) continue;
-  const body = typeof r.body === 'string' ? r.body : '';
+  const rawBody = r.body ?? r.data;
+  const body = typeof rawBody === 'string' ? rawBody : '';
   if (!body) continue;
 
   const text = toText(body);
@@ -1748,7 +1761,7 @@ JOIN acq.lead_research r ON r.lead_id = l.id AND r.is_current
     mx_check = code(b, "Evaluate MX", r"""
 const lead = $('Per Lead').first().json;
 const r = $input.first().json;
-const body = r.body ?? r;
+const body = r.body ?? r.data ?? r;
 
 // DNS status 0 = NOERROR. Answer records of type 15 are MX records.
 const answers = body?.Answer || [];
@@ -2003,17 +2016,16 @@ FROM acq.claim_leads_for_audit(10, $1)
 
     loop = loop_node(b, "Per Lead", 1)
 
-    plan = code(b, "Plan Audit", r"""
+    plan = code(b, "Plan Audit", PARSE_URL_JS + "\n" + r"""
 const l = $input.first().json;
-try {
-  const u = new URL(/^https?:\/\//i.test(l.website) ? l.website : `http://${l.website}`);
-  return [{ json: { ...l, homepage: u.href, origin: u.origin,
+const u = parseUrl(l.website);
+if (u) {
+  return [{ json: { ...l, homepage: u.href, origin: u.origin, path: u.path,
                     robots_url: `${u.origin}/robots.txt`, plan_error: null } }];
-} catch (e) {
-  return [{ json: { ...l, homepage: null, origin: null,
-                    robots_url: 'http://invalid.invalid/robots.txt',
-                    plan_error: 'unparseable_website_url' } }];
 }
+return [{ json: { ...l, homepage: null, origin: null, path: null,
+                  robots_url: 'http://invalid.invalid/robots.txt',
+                  plan_error: 'unparseable_website_url' } }];
 """.strip())
 
     robots = http(b, "Fetch robots.txt", "GET", "={{ $json.robots_url }}",
@@ -2029,7 +2041,7 @@ const resp = $input.first().json;
 if (lead.plan_error) return [{ json: { ...lead, allowed: false } }];
 
 const status = resp.statusCode ?? 0;
-const text = (status >= 200 && status < 300) ? String(resp.body ?? '') : '';
+const text = (status >= 200 && status < 300) ? String(resp.body ?? resp.data ?? '') : '';
 const disallow = [];
 let applies = false;
 for (const raw of text.split(/\r?\n/)) {
@@ -2041,7 +2053,7 @@ for (const raw of text.split(/\r?\n/)) {
   if (key === 'user-agent') applies = (val === '*' || /zenvexa/i.test(val));
   else if (key === 'disallow' && applies && val) disallow.push(val);
 }
-const path = new URL(lead.homepage).pathname || '/';
+const path = lead.path || '/';
 const blocked = disallow.some(d => d === '/' || path.startsWith(d));
 return [{ json: { ...lead, allowed: !blocked, robots_disallow_rules: disallow } }];
 """.strip())
@@ -2066,9 +2078,15 @@ return [{ json: { ...$input.first().json, started_at: Date.now() } }];
 const lead = $('Start Timer').first().json;
 const resp = $input.first().json;
 const status = Number(resp.statusCode ?? 0);
-const body = typeof resp.body === 'string' ? resp.body : '';
+const rawBody = resp.body ?? resp.data;
+const body = typeof rawBody === 'string' ? rawBody : '';
 const elapsed = lead.started_at ? Date.now() - lead.started_at : null;
-const reachable = status >= 200 && status < 400 && body.length > 0;
+// Unreachable means the request failed or the server answered with an error.
+// A 200 whose body we could not read is reachable and simply unjudged:
+// claiming "your website does not load" about a working site is the worst
+// thing this audit could say, and it once said it about every site.
+const reachable = status >= 200 && status < 400;
+const readable = reachable && body.length > 0;
 
 const text = body
   .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -2105,7 +2123,7 @@ const parked = reachable &&
 const issues = [];
 if (!reachable) {
   issues.push('site_unreachable');
-} else {
+} else if (readable) {
   if (parked) issues.push('site_parked');
   if (!https) issues.push('no_https');
   if (!hasViewport) issues.push('not_mobile_friendly');
@@ -2118,7 +2136,7 @@ if (!reachable) {
 // only "not seen on the homepage", and only when the page carried enough text
 // to judge: a JavaScript-rendered shell would make everything look missing,
 // so then each feature is null (unknown) rather than false.
-const judgeable = reachable && !parked && text.length >= 400;
+const judgeable = readable && !parked && text.length >= 400;
 const seen = (re) => judgeable ? re.test(body) : (re.test(body) ? true : null);
 const features = {
   online_ordering: seen(/(order (online|now)|online order|add to cart|checkout|foodpanda\.|ubereats\.|doordash\.|deliveroo\.|grubhub\.|talabat\.|careem\.com\/food|cheetay\.)/i),
@@ -2170,16 +2188,17 @@ return [{ json: {
 """.strip())
 
     blocked = code(b, "Robots Blocked", r"""
-// Not fetched. A URL that cannot even be parsed is a broken listing, which is
-// itself worth telling the owner; a robots.txt refusal is respected and the
-// lead simply goes unscored on site quality.
+// Not fetched. Nothing was observed, so nothing is claimed: an unparseable URL
+// or a robots.txt refusal is recorded as unknown, never as "does not load".
+// (It once was, and a sandbox without URL turned every site into a false
+// "your website does not load" pitch.)
 const lead = $input.first().json;
 return [{ json: {
   lead_id: lead.id,
   url: lead.website,
   robots_allowed: lead.plan_error ? null : false,
-  reachable: lead.plan_error ? false : null,
-  issues: lead.plan_error ? ['site_unreachable'] : [],
+  reachable: null,
+  issues: [],
   raw: { reason: lead.plan_error || 'robots_disallow', rules: lead.robots_disallow_rules || [] },
 }}];
 """.strip())

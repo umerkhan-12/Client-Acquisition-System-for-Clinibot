@@ -61,8 +61,10 @@ function runNode(wfKey, nodeName, { input = [], nodes = {} } = {}) {
   };
   const $execution = { id: "test-exec-1" };
   const $now = { toISO: () => "2026-08-29T00:00:00.000Z" };
-  const fn = new Function("$input", "$", "$execution", "$now", code);
-  return fn($input, $, $execution, $now);
+  // n8n 2.x runs Code nodes in a sandbox with no URL global. Shadow it here, or
+  // a node using `new URL` passes every test and fails on every real run.
+  const fn = new Function("$input", "$", "$execution", "$now", "URL", code);
+  return fn($input, $, $execution, $now, undefined);
 }
 
 // ----------------------------------------------------------------- runner
@@ -998,6 +1000,39 @@ test("a page too thin to judge reports features as unknown, never missing", () =
     `<html><head><meta name="viewport" content="x"></head><body><div id="root"></div></body></html>` });
   eq(a.raw.features.booking, null, "booking unknown");
   eq(a.raw.features.online_ordering, null, "ordering unknown");
+});
+
+test("a page delivered in `data` (n8n 2.x) is read, not called unreachable", () => {
+  const a = analyze({ statusCode: 200, data:
+    `<html><head><meta name="viewport" content="x"><link rel="canonical" href="https://x.pk/"></head>
+     <body><a href="tel:+92300">Call</a> &copy; ${year} X</body></html>` });
+  eq(a.reachable, true, "reachable");
+  eq(a.issues, [], "no issues");
+});
+
+test("a 200 with no readable body is reachable and claims nothing", () => {
+  const a = analyze({ statusCode: 200 });
+  eq(a.reachable, true, "reachable");
+  eq(a.issues, [], "no unreachable or mobile claims");
+});
+
+test("real website URLs parse without a URL global", () => {
+  for (const [site, home] of [["https://mistycoffee.com.pk/", "https://mistycoffee.com.pk/"],
+                              ["http://www.wafflix.com", "http://www.wafflix.com/"],
+                              ["nexcoffee.pk", "http://nexcoffee.pk/"],
+                              ["https://shop.example.pk/menu?x=1", "https://shop.example.pk/menu"]]) {
+    const [o] = runNode("25_website_audit", "Plan Audit", { input: [{ id: "L", website: site }] });
+    eq(o.json.plan_error, null, `parsed ${site}`);
+    eq(o.json.homepage, home, `homepage of ${site}`);
+  }
+});
+
+test("an unparseable URL is recorded as unknown, never as a site that does not load", () => {
+  const [p] = runNode("25_website_audit", "Plan Audit", { input: [{ id: "L", website: "not a url" }] });
+  eq(p.json.plan_error, "unparseable_website_url", "flagged");
+  const [o] = runNode("25_website_audit", "Robots Blocked", { input: [p.json] });
+  eq(o.json.reachable, null, "reachable unknown");
+  eq(o.json.issues, [], "no issue claimed");
 });
 
 test("robots.txt Disallow: / keeps the homepage unfetched", () => {

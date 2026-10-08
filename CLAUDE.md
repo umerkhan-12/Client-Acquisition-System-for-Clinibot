@@ -63,7 +63,7 @@ weakening one, stop and raise it.
 
 ```bash
 ./scripts/bootstrap.sh acq_test          # migrations, prompts, 25 assertions, readiness
-node scripts/test_code_nodes.mjs         # 86 tests over the real Code-node JS
+node scripts/test_code_nodes.mjs         # 90 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
 python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 74 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests
@@ -107,6 +107,12 @@ Each of these was a real bug, found late. They are easy to reintroduce.
   blank item when a claim returns nothing, and a loop treats it as work —
   workflow 30 made a paid Gemini call for a blank clinic every idle hour.
   Put `nonempty_gate()` between any claim and its loop.
+- **n8n 2.x Code nodes have no `URL` global, and HTTP bodies can arrive as
+  `data`.** `new URL()` threw on every call, and the audit read every working
+  site as an empty page: both turned into "your website does not load" for
+  sites that load fine. Use `parseUrl()` and read `resp.body ?? resp.data`. The
+  test harness hides `URL` so this fails in tests, not in production. An audit
+  that could not read a page must claim nothing.
 - **One active scoring config per offer, not overall.** `compute_score()`
   selects by `offer`. A query that reads "the" active config gets two rows.
 - **Two statements in one query.** The Postgres node runs a parameterised query
