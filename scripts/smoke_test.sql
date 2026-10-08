@@ -611,6 +611,33 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 15. Listing stats score, in the shape discovery stores them ===='
+
+-- Regression guard. upsert_lead nests each source's payload under its source
+-- name, so real leads look like raw.GOOGLE_PLACES.GOOGLE_PLACES.rating. The
+-- scorer read the flat path, and the review-count and rating points never
+-- fired for a single discovered lead. Built through upsert_lead here, exactly
+-- as workflow 10 does, rather than inserting raw by hand.
+DO $$
+DECLARE r jsonb; s jsonb;
+BEGIN
+  r := acq.upsert_lead_for_offer(jsonb_build_object(
+         'market_code', 'PK', 'offer', 'WEB', 'clinic_name', 'Stats Test Rooftop Cafe',
+         'city', 'Karachi', 'area', 'Clifton', 'phone', '03009990001',
+         'category', 'CAFE', 'priority_tier', 1,
+         'source', 'TREG_MAPS', 'source_url', 'https://maps.example/stats',
+         'source_ref', 'ChIJstatstest', 'source_ref_type', 'PLACE_ID',
+         'raw', jsonb_build_object('GOOGLE_PLACES',
+                  jsonb_build_object('userRatingCount', 1200, 'rating', 4.6))));
+  s := acq.compute_score((r->>'lead_id')::uuid, 'DETERMINISTIC');
+  IF NOT (s->'breakdown' ? 'active_listing' AND s->'breakdown' ? 'well_rated'
+          AND s->'breakdown' ? 'popular_venue') THEN
+    RAISE EXCEPTION 'FAIL: nested listing stats not scored: %', s->'breakdown';
+  END IF;
+  RAISE NOTICE 'PASS: a busy 4.6-star venue earns active_listing, well_rated and popular_venue (score %)', s->>'score';
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;

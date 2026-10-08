@@ -1,0 +1,254 @@
+{
+  "output": {
+    "found": true,
+    "data": {
+      "items": [
+        {
+          "address": "Zahid Nihari Restaurant, 74600 Mansfield St, Saddar Saddar Town, Karachi, Pakistan",
+          "categories": [
+            "Pakistani restaurant"
+          ],
+          "category": "Pakistani restaurant",
+          "hours": [
+            {
+              "day": "Thursday",
+              "hours": "7 AM–1:30 AM"
+            },
+            {
+              "day": "Friday",
+              "hours": "7 AM–1:30 AM"
+            },
+            {
+              "day": "Saturday",
+              "hours": "7 AM–1:30 AM"
+            },
+            {
+              "day": "Sunday",
+              "hours": "7 AM–1:30 AM"
+            },
+            {
+              "day": "Monday",
+              "hours": "7 AM–1:30 AM"
+            },
+            {
+              "day": "Tuesday",
+              "hours": "7 AM–1 AM"
+            },
+            {
+              "day": "Wednesday",
+              "hours": "7 AM–1:30 AM"
+            }
+          ],
+          "image": "https://lh3.googleusercontent.com/gps-cs-s/AHRPTWnHeVFy6v5NCSkI4yUtAsTJhJitNs4MAfcOyCp7QNqUCQ69S9YW4YHQuKioq5PL-YWCnn7K4JrIRDMDwY83WYfqBiL14J0F_vhwECYAl058YULyfGjClOiHsMQbDiH-FhYq2VE_9A=w203-h152-k-no",
+          "latitude": 24.860278899999997,
+          "longitude": 67.0319817,
+          "name": "Zahid Nihari Restaurant",
+          "permanentlyClosed": false,
+          "phone": "+923343794562",
+          "placeId": "ChIJYW8xMXA-sz4R7NeE-cuSceI",
+          "rating": 4.2,
+          "reviewCount": 10247,
+          "url": "https://www.google.com/maps/place/data=!3m1!4b1!4m2!3m1!1s0x3eb33e7031316f61:0xe27192cbf984d7ec",
+          "website": "https://www.facebook.com/zahidniharisaddar"
+        },
+        {
+          "address": "Karachi Brasserie, Hotel Excelsior, opposite to Atrium Mall, Saddar Karachi, Pakistan",
+          "categories": [
+            "Restaurant",
+            "Cafe"
+          ],
+          "category": "Restaurant",
+          "hours": [
+            {
+              "day": "Thursday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Friday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Saturday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Sunday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Monday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Tuesday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Wednesday",
+              "hours": "12 PM–12 AM"
+            }
+          ],
+          "image": "https://lh3.googleusercontent.com/gps-cs-s/AHRPTWkZ3IcHnuy3stpOO6M4Qxqslvthgr0MVK8TccxYEaxrvk9Qe2Ki2z29m1bq4SvgztG4hOspajYXFwhtNKPQT4vMiryRg85nFc4jdNe-az-pq_zNU28bBcSi9koFb8ftCiqi5tBi=w203-h152-k-no",
+          "latitude": 24.8564291,
+          "longitude": 67.0299552,
+          "name": "Karachi Brasserie",
+          "permanentlyClosed": false,
+          "phone": "+923308880773",
+          "placeId": "ChIJOc-7fv8_sz4ROKZjh7LpPL4",
+          "rating": 4.5,
+          "reviewCount": 300,
+          "url": "https://www.google.com/maps/place/data=!3m1!4b1!4m2!3m1!1s0x3eb33fff7ebbcf39:0xbe3ce9b28763a638"
+        },
+        {
+          "address": "V25H+C96 KBC Courtyard, Zaibunnisa Street, Saddar Karachi, Pakistan",
+          "categories": [
+            "Family restaurant"
+          ],
+          "category": "Family restaurant",
+          "hours": [
+            {
+              "day": "Thursday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Friday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Saturday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Sunday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Monday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Tuesday",
+              "hours": "12 PM–12 AM"
+            },
+            {
+              "day": "Wednesday",
+              "hours": "12 PM–12 AM"
+            }
+          ],
+          "image": "https://lh3.googleusercontent.com/gps-cs-s/AHRPTWmTyODZCDSbOYGMA9nIzOKMPAlcSpWcU8fDhj9-iYI_XpPaibL1t_DvwCjsNiXUuTAre7AYcwGbH0p5b50eLLy2D9aY_jNlz7eebqMCQ2x_0BlEaiYmtMxOTFo6LRZCgtgfctmx7mOPdLap=w203-h111-k-no",
+          "latitude": 24.8584694,
+          "longitude": 67.028418,
+          "name": "KBC Courtyard",
+          "permanentlyClosed": false,
+          "phone": "+9221111328522",
+          "placeId": "ChIJf2DDcQA_sz4Rv9Gl2wzp2mE",
+          "rating": 4.3,
+          "reviewCount": 187,
+          "url": "https://www.google.com/maps/place/data=!3m1!4b1!4m2!3m1!1s0x3eb33f0071c3607f:0x61dae90cdba5d1bf",
+          "website": "http://eatkbc.pk/"
+        },
+        {
+          "address": "M. Saleem Foods, Mansfield St, Saddar Karachi, 74400, Pakistan",
+          "categories": [
+            "Restaurant"
+          ],
+          "category": "Restaurant",
+          "hours": [
+            {
+              "day": "Thursday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Friday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Saturday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Sunday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Monday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Tuesday",
+              "hours": "7 AM–2 AM"
+            },
+            {
+              "day": "Wednesday",
+              "hours": "7 AM–2 AM"
+            }
+          ],
+          "image": "https://lh3.googleusercontent.com/gps-cs-s/AHRPTWmIQHmT4jSG_ePHYAaaSRkJ0hXv-8Tmb-LGrgfY7YQ1ASTcC9u5koT3pltqdzZ6LdPz97oRBafr-p1MztUZwzJHKueuXhxj4TI_D_JDHd8X56_OuIHPWOlPQv2jCEqVrgyVXiBc=w203-h152-k-no",
+          "latitude": 24.8601858,
+          "longitude": 67.03191819999999,
+          "name": "M. Saleem Foods",
+          "permanentlyClosed": false,
+          "phone": "+923341673673",
+          "placeId": "ChIJ2xmSZdk_sz4RjtyeSlL3AwU",
+          "rating": 4.1,
+          "reviewCount": 557,
+          "url": "https://www.google.com/maps/place/data=!3m1!4b1!4m2!3m1!1s0x3eb33fd9659219db:0x503f7524a9edc8e",
+          "website": "https://msaleemfoods.pk/"
+        },
+        {
+          "address": "Chullu Kabab Sistani, Dr Daud Pota Rd, opposite Petrol Pump، Saddar Karachi, 75260, Pakistan",
+          "categories": [
+            "Persian restaurant"
+          ],
+          "category": "Persian restaurant",
+          "hours": [
+            {
+              "day": "Thursday",
+              "hours": "11 AM–11:30 PM"
+            },
+            {
+              "day": "Friday",
+              "hours": "12–11:30 PM"
+            },
+            {
+              "day": "Saturday",
+              "hours": "12–11:30 PM"
+            },
+            {
+              "day": "Sunday",
+              "hours": "5–11:30 PM"
+            },
+            {
+              "day": "Monday",
+              "hours": "11 AM–11:30 PM"
+            },
+            {
+              "day": "Tuesday",
+              "hours": "11 AM–11:30 PM"
+            },
+            {
+              "day": "Wednesday",
+              "hours": "11 AM–11:30 PM"
+            }
+          ],
+          "image": "https://lh3.googleusercontent.com/gps-cs-s/AHRPTWnFMmvmrNZomCmm1KTxGic9rGKGENk5txM7hGAt6gnksIILSaCVZUyuBQ3-UpJo-R8Yt_u6h0g50qsXO2eQnWLKHjeGP3Mv2IM5T-PFnNgAtWRdie4d3NpOKyH70yDVF3Jrd0g-=w203-h114-k-no",
+          "latitude": 24.856774599999998,
+          "longitude": 67.03143519999999,
+          "name": "Chullu Kabab Sistani",
+          "permanentlyClosed": false,
+          "phone": "+923008277731",
+          "placeId": "ChIJxQZnIHE-sz4RSkypMHhKjMY",
+          "rating": 4.1,
+          "reviewCount": 4874,
+          "url": "https://www.google.com/maps/place/data=!3m1!4b1!4m2!3m1!1s0x3eb33e71206706c5:0xc68c4a7830a94c4a",
+          "website": "https://chullukababsistani.pk/"
+        }
+      ]
+    }
+  },
+  "provider": "AnyAPI",
+  "costUsd": 0.00175,
+  "items": 20,
+  "replayed": false,
+  "hint": "large_result: this response is ~21 KB. To keep future runs from flooding your context, re-run with `fields` (keep only the keys you need), `max_items` (cap rows), `summary=true` (outline only), or `jq` for arbitrary reshaping (e.g. `jq=.data.markdown[:2000]`) — these trim the response only, never the charge."
+}

@@ -24,7 +24,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT\n  now()                                                             AS started_at,\n  COALESCE((SELECT sum(cost_usd) FROM acq.ai_calls\n             WHERE created_at::date = CURRENT_DATE), 0)             AS spent_today,\n  (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.daily_cost_cap_usd')      AS cap,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_tasks_per_run')     AS max_tasks,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_new_leads_per_run') AS max_new,\n  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'discovery.crawl_user_agent')      AS user_agent",
+        "query": "SELECT\n  now()                                                             AS started_at,\n  COALESCE((SELECT sum(cost_usd) FROM acq.ai_calls\n             WHERE created_at::date = CURRENT_DATE), 0)             AS spent_today,\n  (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.daily_cost_cap_usd')      AS cap,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_tasks_per_run')     AS max_tasks,\n  (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_new_leads_per_run') AS max_new,\n  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'discovery.crawl_user_agent')      AS user_agent,\n  acq.tool_spend_today('treg')                                                                       AS treg_spent_today,\n  (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'treg.daily_cost_cap_usd')         AS treg_cap,\n  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'treg.max_cost_per_call_usd')      AS treg_max_per_call,\n  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'treg.maps_endpoint')              AS treg_maps_endpoint",
         "options": {}
       },
       "id": "wf10-01",
@@ -57,7 +57,7 @@
           "conditions": [
             {
               "id": "Within Budget?-c",
-              "leftValue": "={{ $json.spent_today < $json.cap }}",
+              "leftValue": "={{ $json.spent_today < $json.cap && $json.treg_spent_today < $json.treg_cap }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -84,7 +84,7 @@
         "operation": "executeQuery",
         "query": "INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at, error, meta)\nVALUES ('10_lead_discovery', $1, 'ERROR', now(), 'daily_cost_cap_reached', $2::jsonb)",
         "options": {
-          "queryReplacement": "={{ [ $execution.id, JSON.stringify({ spent_today: $json.spent_today, cap: $json.cap }) ] }}"
+          "queryReplacement": "={{ [ $execution.id, JSON.stringify({ spent_today: $json.spent_today, cap: $json.cap, treg_spent_today: $json.treg_spent_today, treg_cap: $json.treg_cap }) ] }}"
         }
       },
       "id": "wf10-03",
@@ -104,13 +104,13 @@
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
-      "notes": "Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd to resume.",
+      "notes": "Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd or treg.daily_cost_cap_usd to resume.",
       "notesInFlow": false
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT id, city, area, query_term, category, provider, priority_tier, bbox,\n       offer, osm_selectors,\n       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code\nFROM acq.next_discovery_tasks($1::int) d",
+        "query": "SELECT id, city, area, query_term, category, provider, priority_tier, bbox,\n       offer, osm_selectors,\n       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code,\n       (SELECT name FROM acq.markets m WHERE m.id = d.market_id) AS market_name\nFROM acq.next_discovery_tasks($1::int) d",
         "options": {
           "queryReplacement": "={{ [ $json.max_tasks ] }}"
         }
@@ -201,6 +201,30 @@
               },
               "renameOutput": true,
               "outputKey": "GOOGLE_PLACES"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "Route Provider-2",
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "TREG_MAPS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "TREG_MAPS"
             }
           ]
         },
@@ -443,18 +467,129 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const t = $input.first().json;\n// The location is free text, passed to Google Maps as written: area, city\n// and the market's country name, so \"DHA, Karachi, Pakistan\" or\n// \"Shoreditch, London, United Kingdom\".\nconst location = [t.area, t.city, t.market_name].filter(Boolean).join(', ');\nif (!t.query_term || !location) {\n  throw new Error(`TREG_MAPS task ${t.id} needs query_term and a city.`);\n}\nreturn [{ json: { ...t, treg_body: { query: t.query_term, location, limit: 20 } } }];"
+      },
+      "id": "wf10-15",
+      "name": "Build Treg Maps Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://treg.to/call/{{ $('Check Budget + Settings').first().json.treg_maps_endpoint }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Treg-Route-Max-Cost",
+              "value": "={{ $('Check Budget + Settings').first().json.treg_max_per_call }}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'acq10-' + $json.id + '-' + $now.toFormat('yyyyLLdd') }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.treg_body) }}"
+      },
+      "id": "wf10-16",
+      "name": "Treg Maps Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3780,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_TREG",
+          "name": "treg-token"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "The treg agent token comes from the treg-token credential (Header Auth, X-Treg-Token). A failed call is not billed, and continues so one bad area does not end the loop.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT acq.record_tool_call($1::jsonb) AS logged",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify({ provider: 'treg', endpoint: $('Check Budget + Settings').first().json.treg_maps_endpoint, call_id: ($json.headers || {})['x-treg-call-id'] || '', cost_micro: ($json.headers || {})['x-treg-cost-micro'] || '0', http_status: $json.statusCode || 0, ok: ($json.statusCode >= 200 && $json.statusCode < 300), items: ((($json.body || {}).output || {}).data || {}).items ? $json.body.output.data.items.length : 0, workflow_key: '10_lead_discovery', execution_id: $execution.id, error: $json.error ? String($json.error.message || $json.error) : '' }) }}"
+        }
+      },
+      "id": "wf10-17",
+      "name": "Log Treg Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_PG",
+          "name": "acq-postgres"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Every paid call lands in acq.tool_calls with treg's own reported cost (X-Treg-Cost-Micro); acq.tool_spend_today() feeds the budget gate above.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const task = $('Build Treg Maps Request').first().json;\nconst maxNew = $('Check Budget + Settings').first().json.max_new || 60;\nconst resp = $input.first().json;\nconst status = Number(resp.statusCode ?? 0);\nconst body = resp.body ?? resp.data ?? resp;\n\n// A refused or failed call (402 out of balance, 429, 5xx) yields nothing,\n// and the empty item alwaysOutputData emits keeps the loop moving.\nif (status && (status < 200 || status >= 300)) return [];\n\nconst items = body?.output?.data?.items || body?.items || [];\nconst isWeb = task.offer === 'WEB';\nconst out = [];\nfor (const p of items) {\n  if (!p || !p.name || p.permanentlyClosed) continue;\n  if (!isWeb && /\\b(hospital|medical centre complex|trust)\\b/i.test(p.name)) continue;\n\n  const mapsUrl = p.url || (p.placeId ? `https://www.google.com/maps/place/?q=place_id:${p.placeId}` : null);\n  if (!mapsUrl) continue;   // nothing citable to record the contact against\n  const phone = p.phone || null;\n\n  out.push({ json: {\n    market_code: task.market_code,\n    clinic_name: p.name,\n    website: p.website || null,\n    city: task.city,\n    area: task.area || null,\n    address: p.address || null,\n    lat: String(p.latitude ?? ''),\n    lng: String(p.longitude ?? ''),\n    phone,\n    // Google Maps listings carry no email. None is invented here.\n    public_email: null,\n    category: task.category === 'ANY' ? 'OTHER' : task.category,\n    priority_tier: task.priority_tier ?? 2,\n    offer: task.offer || 'CLINIBOT',\n    source: 'TREG_MAPS',\n    source_url: mapsUrl,\n    // The same Google place id the Places branch uses, so a business found by\n    // both collapses onto one lead.\n    source_ref: p.placeId || null,\n    source_ref_type: p.placeId ? 'PLACE_ID' : null,\n    contacts: phone ? [{ contact_type: 'PHONE', value: phone,\n                         source: 'GOOGLE_BUSINESS', source_url: mapsUrl }] : [],\n    raw: { GOOGLE_PLACES: {\n      userRatingCount: p.reviewCount ?? 0,\n      rating: p.rating ?? null,\n      primaryType: p.category ?? null,\n    }},\n  }});\n  if (out.length >= maxNew) break;\n}\nreturn out;"
+      },
+      "id": "wf10-18",
+      "name": "Normalize Treg Maps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4220,
+        300
+      ],
+      "alwaysOutputData": true,
+      "notes": "alwaysOutputData, as for the other normalizers: an area with no results must still reach the loop's back edge.",
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
         "operation": "executeQuery",
         "query": "SELECT acq.upsert_lead_for_offer($1::jsonb) AS result",
         "options": {
           "queryReplacement": "={{ JSON.stringify($json) }}"
         }
       },
-      "id": "wf10-15",
+      "id": "wf10-19",
       "name": "Upsert Lead",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        3560,
+        4440,
         300
       ],
       "credentials": {
@@ -475,12 +610,12 @@
         "amount": 4,
         "unit": "seconds"
       },
-      "id": "wf10-16",
+      "id": "wf10-20",
       "name": "Pause Between Areas",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        3780,
+        4660,
         300
       ],
       "notes": "Politeness delay for Overpass and a natural rate limit for Places.",
@@ -494,12 +629,12 @@
           "queryReplacement": "={{ [ $execution.id, $('Check Budget + Settings').first().json.started_at ] }}"
         }
       },
-      "id": "wf10-17",
+      "id": "wf10-21",
       "name": "Record Run",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        4000,
+        4880,
         300
       ],
       "credentials": {
@@ -537,12 +672,12 @@
         },
         "looseTypeValidation": true
       },
-      "id": "wf10-18",
+      "id": "wf10-22",
       "name": "Anything Claimed?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        4220,
+        5100,
         300
       ],
       "notes": "alwaysOutputData emits one empty item when the claim returns nothing; this keeps it out of the loop.",
@@ -655,6 +790,13 @@
         ],
         [
           {
+            "node": "Build Treg Maps Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Pause Between Areas",
             "type": "main",
             "index": 0
@@ -740,6 +882,44 @@
       ]
     },
     "Normalize Place Details": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Treg Maps Request": {
+      "main": [
+        [
+          {
+            "node": "Treg Maps Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Treg Maps Search": {
+      "main": [
+        [
+          {
+            "node": "Normalize Treg Maps",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Treg Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Treg Maps": {
       "main": [
         [
           {

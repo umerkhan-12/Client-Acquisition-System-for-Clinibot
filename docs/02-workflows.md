@@ -109,7 +109,7 @@ Gemini's `responseSchema` only accepts a subset of JSON Schema, so unsupported k
 
 ## ACQ 10 — Lead Discovery
 
-**File** `n8n/workflows/10_lead_discovery.json` · **19 nodes**
+**File** `n8n/workflows/10_lead_discovery.json` · **23 nodes**
 
 The ordering is the whole point. Text Search returns place IDs cheaply; **Place Details is the billed call**, and it runs only for businesses that survived `acq.filter_unknown_refs`. After the first pass most search results are already in the CRM, so this ordering is the difference between paying once per clinic and paying every month.
 
@@ -117,7 +117,7 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 
 **Trigger** — Schedule trigger (cron `0 8 * * 1-5`)
 
-**Credentials** — `acq-postgres`, `google-places-key`
+**Credentials** — `acq-postgres`, `gemini-api-key`, `google-places-key`
 
 | # | Node | Type | Detail |
 |---|---|---|---|
@@ -127,7 +127,7 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 | 4 | Log Budget Halt | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at` |
 | 5 | Claim Discovery Tasks | Postgres | `SELECT id, city, area, query_term, category, provider, priority_tier, bbox,` |
 | 6 | Per Task | Loop | batch size 1 |
-| 7 | Route Provider | Switch | routes: `OSM`, `GOOGLE_PLACES`, `fallback` |
+| 7 | Route Provider | Switch | routes: `OSM`, `GOOGLE_PLACES`, `TREG_MAPS`, `fallback` |
 | 8 | Build Overpass Query | Code |  |
 | 9 | Overpass API | HTTP | `GET https://overpass-api.de/api/interpreter` |
 | 10 | Normalize OSM Results | Code |  |
@@ -136,21 +136,26 @@ OSM needs no such split — one Overpass call returns full tags — so the OSM b
 | 13 | Drop Already-Known Places | Postgres | `SELECT ref` |
 | 14 | Place Details (new only) | HTTP | `GET =https://places.googleapis.com/v1/places/…` |
 | 15 | Normalize Place Details | Code |  |
-| 16 | Upsert Lead | Postgres | `SELECT acq.upsert_lead_for_offer($1::jsonb) AS result` |
-| 17 | Pause Between Areas | Wait | 4 seconds |
-| 18 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
-| 19 | Anything Claimed? | IF |  |
+| 16 | Build Treg Maps Request | Code |  |
+| 17 | Treg Maps Search | HTTP | `POST =https://treg.to/call/…` |
+| 18 | Log Treg Call | Postgres | `SELECT acq.record_tool_call($1::jsonb) AS logged` |
+| 19 | Normalize Treg Maps | Code |  |
+| 20 | Upsert Lead | Postgres | `SELECT acq.upsert_lead_for_offer($1::jsonb) AS result` |
+| 21 | Pause Between Areas | Wait | 4 seconds |
+| 22 | Record Run | Postgres | `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, ` |
+| 23 | Anything Claimed? | IF |  |
 
 **Database operations**
 
 - **Check Budget + Settings** — `SELECT`
-- **Log Budget Halt** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at`<br>Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd to resume.
+- **Log Budget Halt** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at`<br>Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd or treg.daily_cost_cap_usd to resume.
 - **Claim Discovery Tasks** — `SELECT id, city, area, query_term, category, provider, priority_tier, bbox,`<br>next_discovery_tasks() claims and reschedules atomically, so two overlapping runs never process the same area twice.
 - **Drop Already-Known Places** — `SELECT ref`<br>THE cost lever. Place Details is billed per call; this removes every business already in the CRM before a single Details request is made.
+- **Log Treg Call** — `SELECT acq.record_tool_call($1::jsonb) AS logged`<br>Every paid call lands in acq.tool_calls with treg's own reported cost (X-Treg-Cost-Micro); acq.tool_spend_today() feeds the budget gate above.
 - **Upsert Lead** — `SELECT acq.upsert_lead_for_offer($1::jsonb) AS result`<br>One entry point for every source. Deduplication, provenance checking, contact recording and the offer tag all happen inside this call.
 - **Record Run** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, `
 
-**Error handling** — retries on: `Check Budget + Settings`, `Log Budget Halt`, `Claim Discovery Tasks`, `Overpass API`, `Places Text Search`, `Drop Already-Known Places`, `Place Details (new only)`, `Upsert Lead`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+**Error handling** — retries on: `Check Budget + Settings`, `Log Budget Halt`, `Claim Discovery Tasks`, `Overpass API`, `Places Text Search`, `Drop Already-Known Places`, `Place Details (new only)`, `Treg Maps Search`, `Log Treg Call`, `Upsert Lead`, `Record Run`. continues past failure at: `Treg Maps Search`, `Log Treg Call`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
 
 ---
 

@@ -808,6 +808,52 @@ test("every Places Details response becomes a lead, not just the first", () => {
   eq(out.map((o) => o.json.source_ref), ["A", "B", "C"], "all three kept, the 404 skipped");
 });
 
+group("10 — Treg Maps discovery");
+
+// A real anyapi.google.serp.maps answer (first live call, 2026-10-08),
+// trimmed to five public business listings.
+const tregFixture = JSON.parse(readFileSync(
+  path.join(ROOT, "scripts", "fixtures", "treg_maps_karachi_restaurants.json"), "utf8"));
+const tregTask = { id: "T-treg", market_code: "PK", market_name: "Pakistan", city: "Karachi",
+                   area: "Saddar", offer: "WEB", category: "RESTAURANT", priority_tier: 1,
+                   query_term: "restaurant", provider: "TREG_MAPS" };
+function normalizeTreg(resp) {
+  return runNode("10_lead_discovery", "Normalize Treg Maps", {
+    input: [resp],
+    nodes: { "Build Treg Maps Request": tregTask, "Check Budget + Settings": { max_new: 60 } },
+  }).map((o) => o.json);
+}
+
+test("the request asks Google Maps for area, city and country as free text", () => {
+  const [o] = runNode("10_lead_discovery", "Build Treg Maps Request", { input: [tregTask] });
+  eq(o.json.treg_body, { query: "restaurant", location: "Saddar, Karachi, Pakistan", limit: 20 }, "body");
+});
+
+test("a real Treg answer becomes leads with phone, place id and listing stats", () => {
+  const leads = normalizeTreg({ statusCode: 200, body: tregFixture });
+  eq(leads.length, 5, "all five places kept");
+  const kb = leads.find((l) => l.clinic_name === "Karachi Brasserie");
+  ok(kb, "Karachi Brasserie present");
+  eq(kb.website, null, "no website recorded as null, not guessed");
+  eq(kb.source_ref_type, "PLACE_ID", "dedups with the Places branch");
+  eq(kb.offer, "WEB", "offer");
+  eq(kb.public_email, null, "no email invented");
+  ok(kb.phone && kb.contacts[0].source === "GOOGLE_BUSINESS" && kb.contacts[0].source_url, "phone with evidence");
+  eq(kb.raw.GOOGLE_PLACES.userRatingCount, 300, "review count kept for scoring");
+});
+
+test("a refused or failed call yields nothing, so the loop moves on", () => {
+  eq(normalizeTreg({ statusCode: 402, body: { error: "insufficient_balance" } }).length, 0, "402");
+  eq(normalizeTreg({ error: { message: "timeout" } }).length, 0, "network error");
+});
+
+test("closed and unnamed places are dropped", () => {
+  const body = JSON.parse(JSON.stringify(tregFixture));
+  body.output.data.items[0].permanentlyClosed = true;
+  body.output.data.items[1].name = "";
+  eq(normalizeTreg({ statusCode: 200, body }).length, 3, "two dropped");
+});
+
 group("20 — offer-aware triage and decision");
 
 function triageLeads(leads) {

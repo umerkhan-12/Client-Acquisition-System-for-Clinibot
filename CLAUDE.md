@@ -62,10 +62,10 @@ weakening one, stop and raise it.
 ## Verify before you commit
 
 ```bash
-./scripts/bootstrap.sh acq_test          # migrations, prompts, 21 assertions, readiness
-node scripts/test_code_nodes.mjs         # 77 tests over the real Code-node JS
+./scripts/bootstrap.sh acq_test          # migrations, prompts, 22 assertions, readiness
+node scripts/test_code_nodes.mjs         # 81 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
-python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 73 statements
+python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 74 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests
 (cd dashboard && npx tsc --noEmit)       # deps installed; also: npx next build
 ```
@@ -138,9 +138,9 @@ Each of these was a real bug, found late. They are easy to reintroduce.
 ## Layout
 
 ```
-db/migrations/   11 SQL migrations — the actual logic. Idempotent, ordered.
+db/migrations/   12 SQL migrations — the actual logic. Idempotent, ordered.
 db/prisma/       Prisma models for the NestJS backend later. NOT a migration source.
-n8n/             build_workflows.py -> workflows/*.json (15 workflows, 217 nodes)
+n8n/             build_workflows.py -> workflows/*.json (15 workflows, 221 nodes)
 prompts/         7 files / 9 prompt keys, loaded by scripts/load_prompts.py
 dashboard/       Next.js admin view on Vercel; magic-link auth + allowlist,
                  reads 5 views as acq_dashboard, writes only the approval queue

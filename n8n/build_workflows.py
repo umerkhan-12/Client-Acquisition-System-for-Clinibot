@@ -35,6 +35,9 @@ CRED = {
     "telegram": {"telegramApi":     {"id": "REPLACE_TELEGRAM", "name": "acq-telegram"}},
     "gemini":   {"httpHeaderAuth":  {"id": "REPLACE_GEMINI",   "name": "gemini-api-key"}},
     "places":   {"httpQueryAuth":   {"id": "REPLACE_PLACES",   "name": "google-places-key"}},
+    # Header Auth, header name X-Treg-Token. Use a capped agent token
+    # (`treg org agent-new acq-n8n --cap 500`), never a person's own login.
+    "treg":     {"httpHeaderAuth":  {"id": "REPLACE_TREG",     "name": "treg-token"}},
 }
 
 # Set as the error workflow on every other workflow after import.
@@ -641,22 +644,30 @@ SELECT
   (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'ai.daily_cost_cap_usd')      AS cap,
   (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_tasks_per_run')     AS max_tasks,
   (SELECT (value #>> '{}')::int     FROM acq.settings WHERE key = 'discovery.max_new_leads_per_run') AS max_new,
-  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'discovery.crawl_user_agent')      AS user_agent
+  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'discovery.crawl_user_agent')      AS user_agent,
+  acq.tool_spend_today('treg')                                                                       AS treg_spent_today,
+  (SELECT (value #>> '{}')::numeric FROM acq.settings WHERE key = 'treg.daily_cost_cap_usd')         AS treg_cap,
+  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'treg.max_cost_per_call_usd')      AS treg_max_per_call,
+  (SELECT  value #>> '{}'           FROM acq.settings WHERE key = 'treg.maps_endpoint')              AS treg_maps_endpoint
 """.strip())
 
-    within = if_bool(b, "Within Budget?", "={{ $json.spent_today < $json.cap }}")
+    within = if_bool(b, "Within Budget?",
+                     "={{ $json.spent_today < $json.cap && $json.treg_spent_today < $json.treg_cap }}")
 
     halted = pg(b, "Log Budget Halt", """
 INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, finished_at, error, meta)
 VALUES ('10_lead_discovery', $1, 'ERROR', now(), 'daily_cost_cap_reached', $2::jsonb)
 """.strip(),
-        replacement="={{ [ $execution.id, JSON.stringify({ spent_today: $json.spent_today, cap: $json.cap }) ] }}",
-        notes="Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd to resume.")
+        replacement="={{ [ $execution.id, JSON.stringify({ spent_today: $json.spent_today, cap: $json.cap, "
+                    "treg_spent_today: $json.treg_spent_today, treg_cap: $json.treg_cap }) ] }}",
+        notes="Discovery stops rather than quietly overspending. Raise ai.daily_cost_cap_usd "
+              "or treg.daily_cost_cap_usd to resume.")
 
     tasks = pg(b, "Claim Discovery Tasks", """
 SELECT id, city, area, query_term, category, provider, priority_tier, bbox,
        offer, osm_selectors,
-       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code
+       (SELECT code FROM acq.markets m WHERE m.id = d.market_id) AS market_code,
+       (SELECT name FROM acq.markets m WHERE m.id = d.market_id) AS market_name
 FROM acq.next_discovery_tasks($1::int) d
 """.strip(),
         replacement="={{ [ $json.max_tasks ] }}",
@@ -665,7 +676,7 @@ FROM acq.next_discovery_tasks($1::int) d
               "overlapping runs never process the same area twice.")
 
     loop = loop_node(b, "Per Task", 1)
-    route = switch(b, "Route Provider", "={{ $json.provider }}", ["OSM", "GOOGLE_PLACES"])
+    route = switch(b, "Route Provider", "={{ $json.provider }}", ["OSM", "GOOGLE_PLACES", "TREG_MAPS"])
 
     # ---------------- OSM branch (free) ----------------
     osm_q = code(b, "Build Overpass Query", r"""
@@ -942,6 +953,110 @@ return out;
         notes="alwaysOutputData, for the same reason as Normalize OSM Results: a "
               "place that is filtered out must not end the loop.")
 
+    # ---------------- Treg Maps branch (paid, ~$0.00175 per search) ----------------
+    # Google Maps through treg.to's proxy: any city in the world, with phone,
+    # website, rating and review count on each place. One flat-priced call
+    # returns up to 20 places, so there is no per-place Details step to filter
+    # ahead of, unlike the Places branch.
+    treg_req = code(b, "Build Treg Maps Request", r"""
+const t = $input.first().json;
+// The location is free text, passed to Google Maps as written: area, city
+// and the market's country name, so "DHA, Karachi, Pakistan" or
+// "Shoreditch, London, United Kingdom".
+const location = [t.area, t.city, t.market_name].filter(Boolean).join(', ');
+if (!t.query_term || !location) {
+  throw new Error(`TREG_MAPS task ${t.id} needs query_term and a city.`);
+}
+return [{ json: { ...t, treg_body: { query: t.query_term, location, limit: 20 } } }];
+""".strip())
+
+    treg_call = http(b, "Treg Maps Search", "POST",
+        "=https://treg.to/call/{{ $('Check Budget + Settings').first().json.treg_maps_endpoint }}",
+        headers={
+            # treg refuses, unbilled, any call that would cost more than this.
+            "X-Treg-Route-Max-Cost": "={{ $('Check Budget + Settings').first().json.treg_max_per_call }}",
+            # A retried node replays the stored answer instead of paying twice.
+            "Idempotency-Key": "={{ 'acq10-' + $json.id + '-' + $now.toFormat('yyyyLLdd') }}",
+        },
+        body="={{ JSON.stringify($json.treg_body) }}",
+        creds="treg", timeout=60000, retries=2, on_error="continueRegularOutput",
+        notes="The treg agent token comes from the treg-token credential (Header Auth, "
+              "X-Treg-Token). A failed call is not billed, and continues so one bad area "
+              "does not end the loop.")
+
+    treg_log = pg(b, "Log Treg Call", "SELECT acq.record_tool_call($1::jsonb) AS logged",
+        replacement="={{ JSON.stringify({ provider: 'treg', "
+                    "endpoint: $('Check Budget + Settings').first().json.treg_maps_endpoint, "
+                    "call_id: ($json.headers || {})['x-treg-call-id'] || '', "
+                    "cost_micro: ($json.headers || {})['x-treg-cost-micro'] || '0', "
+                    "http_status: $json.statusCode || 0, "
+                    "ok: ($json.statusCode >= 200 && $json.statusCode < 300), "
+                    "items: ((($json.body || {}).output || {}).data || {}).items "
+                    "? $json.body.output.data.items.length : 0, "
+                    "workflow_key: '10_lead_discovery', execution_id: $execution.id, "
+                    "error: $json.error ? String($json.error.message || $json.error) : '' }) }}",
+        on_error="continueRegularOutput",
+        notes="Every paid call lands in acq.tool_calls with treg's own reported cost "
+              "(X-Treg-Cost-Micro); acq.tool_spend_today() feeds the budget gate above.")
+
+    treg_norm = code(b, "Normalize Treg Maps", r"""
+const task = $('Build Treg Maps Request').first().json;
+const maxNew = $('Check Budget + Settings').first().json.max_new || 60;
+const resp = $input.first().json;
+const status = Number(resp.statusCode ?? 0);
+const body = resp.body ?? resp.data ?? resp;
+
+// A refused or failed call (402 out of balance, 429, 5xx) yields nothing,
+// and the empty item alwaysOutputData emits keeps the loop moving.
+if (status && (status < 200 || status >= 300)) return [];
+
+const items = body?.output?.data?.items || body?.items || [];
+const isWeb = task.offer === 'WEB';
+const out = [];
+for (const p of items) {
+  if (!p || !p.name || p.permanentlyClosed) continue;
+  if (!isWeb && /\b(hospital|medical centre complex|trust)\b/i.test(p.name)) continue;
+
+  const mapsUrl = p.url || (p.placeId ? `https://www.google.com/maps/place/?q=place_id:${p.placeId}` : null);
+  if (!mapsUrl) continue;   // nothing citable to record the contact against
+  const phone = p.phone || null;
+
+  out.push({ json: {
+    market_code: task.market_code,
+    clinic_name: p.name,
+    website: p.website || null,
+    city: task.city,
+    area: task.area || null,
+    address: p.address || null,
+    lat: String(p.latitude ?? ''),
+    lng: String(p.longitude ?? ''),
+    phone,
+    // Google Maps listings carry no email. None is invented here.
+    public_email: null,
+    category: task.category === 'ANY' ? 'OTHER' : task.category,
+    priority_tier: task.priority_tier ?? 2,
+    offer: task.offer || 'CLINIBOT',
+    source: 'TREG_MAPS',
+    source_url: mapsUrl,
+    // The same Google place id the Places branch uses, so a business found by
+    // both collapses onto one lead.
+    source_ref: p.placeId || null,
+    source_ref_type: p.placeId ? 'PLACE_ID' : null,
+    contacts: phone ? [{ contact_type: 'PHONE', value: phone,
+                         source: 'GOOGLE_BUSINESS', source_url: mapsUrl }] : [],
+    raw: { GOOGLE_PLACES: {
+      userRatingCount: p.reviewCount ?? 0,
+      rating: p.rating ?? null,
+      primaryType: p.category ?? null,
+    }},
+  }});
+  if (out.length >= maxNew) break;
+}
+return out;
+""".strip(), always_output=True,
+        notes="alwaysOutputData, as for the other normalizers: an area with no results "
+              "must still reach the loop's back edge.")
+
     upsert = pg(b, "Upsert Lead", "SELECT acq.upsert_lead_for_offer($1::jsonb) AS result",
                 replacement="={{ JSON.stringify($json) }}",
                 notes="One entry point for every source. Deduplication, provenance "
@@ -977,7 +1092,13 @@ VALUES ('10_lead_discovery', $1, 'SUCCESS',
     b.connect(places_norm, upsert)
 
     # unmatched provider falls through the switch's extra output
-    b.connect(route, pause, src_out=2)
+    b.connect(route, treg_req, src_out=2)
+    b.chain(treg_req, treg_call)
+    b.connect(treg_call, treg_norm)
+    b.connect(treg_call, treg_log)             # cost record, in parallel
+    b.connect(treg_norm, upsert)
+
+    b.connect(route, pause, src_out=3)
     b.chain(upsert, pause)
     b.connect(pause, loop)                     # back around the loop
     return b.build()
