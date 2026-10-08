@@ -63,7 +63,7 @@ weakening one, stop and raise it.
 
 ```bash
 ./scripts/bootstrap.sh acq_test          # migrations, prompts, 22 assertions, readiness
-node scripts/test_code_nodes.mjs         # 81 tests over the real Code-node JS
+node scripts/test_code_nodes.mjs         # 84 tests over the real Code-node JS
 python3 n8n/build_workflows.py           # rebuild + structural validation
 python3 scripts/validate_workflow_sql.py | psql -d acq_test   # type-check all 74 statements
 ./scripts/check_deliverability.sh --self-test                 # 19 self-tests

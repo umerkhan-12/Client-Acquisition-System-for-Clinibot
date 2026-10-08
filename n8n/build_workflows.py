@@ -164,6 +164,13 @@ def http(b, name, method, url, *, headers=None, qs=None, body=None,
         params["sendBody"] = True
         params["specifyBody"] = "json"
         params["jsonBody"] = body
+    if creds:
+        # Attaching a credential is not enough: without these two parameters
+        # the HTTP Request node defaults to authentication "none" and sends no
+        # header at all. Found on the first live treg call ("not
+        # authenticated", 401) — Gemini and Places were equally unauthenticated.
+        params["authentication"] = "genericCredentialType"
+        params["genericAuthType"] = next(iter(CRED[creds]))
     kw.setdefault("retries", 3)
     return b.node(name, "n8n-nodes-base.httpRequest", params, tv=4.2,
                   creds=creds, **kw)
@@ -555,8 +562,21 @@ VALUES ($1, $2, NULLIF($3,'')::uuid, $4, false, $5, $6)
 
     dl = dead_letter(b, "Record AI Dead Letter", "01_ai_call", "Gemini Retry")
 
-    ret_ok = code(b, "Return Result", r"""
-const j = $input.first().json;
+    # Both return nodes sit after a Postgres insert, so $input is that insert's
+    # result row, not the model's answer. Reading $input here returned
+    # data: undefined to every caller; found on the first successful Gemini
+    # call, when every draft arrived empty. The answer lives on whichever
+    # parse node ran last.
+    pick_parse_js = r"""
+function parsed(name) {
+  try { return $(name).isExecuted ? $(name).first().json : null; } catch (e) { return null; }
+}
+const retry = parsed('Parse & Validate (Retry)');
+const first = parsed('Parse & Validate');
+""".strip()
+
+    ret_ok = code(b, "Return Result", pick_parse_js + "\n" + r"""
+const j = [retry, first].find(x => x && x.valid) || {};
 return [{ json: {
   ok: true,
   data: j.data,
@@ -571,11 +591,11 @@ return [{ json: {
 } }];
 """.strip())
 
-    ret_fail = code(b, "Return Failure", r"""
+    ret_fail = code(b, "Return Failure", pick_parse_js + "\n" + r"""
 // Deliberately returns ok:false rather than throwing. The caller decides what a
 // failed AI call means — for research it means skip the lead, for personalization
 // it means do not send an email. Neither should look like a workflow crash.
-const j = $input.first().json;
+const j = retry || first || {};
 return [{ json: {
   ok: false,
   error: j.error,
@@ -3597,6 +3617,13 @@ def main():
                           or "scheduleTrigger" in n["type"] or "emailReadImap" in n["type"])
             if not is_trigger and n["name"] not in targets:
                 problems.append(f"{filename}: node {n['name']!r} is unreachable")
+
+        # A credential an HTTP node is not told to use is silently not sent.
+        for n in doc["nodes"]:
+            if (n["type"] == "n8n-nodes-base.httpRequest" and n.get("credentials")
+                    and n["parameters"].get("authentication") != "genericCredentialType"):
+                problems.append(f"{filename}: HTTP node {n['name']!r} has a credential "
+                                f"but authentication is not set, so it would be ignored")
 
         text = json.dumps(doc, indent=2)
         json.loads(text)                       # must round-trip

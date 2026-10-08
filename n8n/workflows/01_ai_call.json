@@ -69,7 +69,9 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.request) }}"
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
       },
       "id": "wf01-03",
       "name": "Gemini",
@@ -168,7 +170,9 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.request) }}"
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
       },
       "id": "wf01-07",
       "name": "Gemini Retry",
@@ -323,7 +327,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const j = $input.first().json;\nreturn [{ json: {\n  ok: true,\n  data: j.data,\n  prompt_key: j.prompt_key,\n  prompt_version: j.prompt_version,\n  model: j.model,\n  lead_id: j.lead_id,\n  attempt: j.attempt,\n  input_tokens: j.input_tokens,\n  output_tokens: j.output_tokens,\n  cost_usd: j.cost_usd,\n} }];"
+        "jsCode": "function parsed(name) {\n  try { return $(name).isExecuted ? $(name).first().json : null; } catch (e) { return null; }\n}\nconst retry = parsed('Parse & Validate (Retry)');\nconst first = parsed('Parse & Validate');\nconst j = [retry, first].find(x => x && x.valid) || {};\nreturn [{ json: {\n  ok: true,\n  data: j.data,\n  prompt_key: j.prompt_key,\n  prompt_version: j.prompt_version,\n  model: j.model,\n  lead_id: j.lead_id,\n  attempt: j.attempt,\n  input_tokens: j.input_tokens,\n  output_tokens: j.output_tokens,\n  cost_usd: j.cost_usd,\n} }];"
       },
       "id": "wf01-13",
       "name": "Return Result",
@@ -337,7 +341,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Deliberately returns ok:false rather than throwing. The caller decides what a\n// failed AI call means \u2014 for research it means skip the lead, for personalization\n// it means do not send an email. Neither should look like a workflow crash.\nconst j = $input.first().json;\nreturn [{ json: {\n  ok: false,\n  error: j.error,\n  detail: j.detail,\n  prompt_key: j.prompt_key,\n  lead_id: j.lead_id,\n  attempts: 2,\n} }];"
+        "jsCode": "function parsed(name) {\n  try { return $(name).isExecuted ? $(name).first().json : null; } catch (e) { return null; }\n}\nconst retry = parsed('Parse & Validate (Retry)');\nconst first = parsed('Parse & Validate');\n// Deliberately returns ok:false rather than throwing. The caller decides what a\n// failed AI call means \u2014 for research it means skip the lead, for personalization\n// it means do not send an email. Neither should look like a workflow crash.\nconst j = retry || first || {};\nreturn [{ json: {\n  ok: false,\n  error: j.error,\n  detail: j.detail,\n  prompt_key: j.prompt_key,\n  lead_id: j.lead_id,\n  attempts: 2,\n} }];"
       },
       "id": "wf01-14",
       "name": "Return Failure",

@@ -49,6 +49,9 @@ function runNode(wfKey, nodeName, { input = [], nodes = {} } = {}) {
     all: () => items,
     first: () => items[0],
     last: () => items[items.length - 1],
+    // A stubbed node counts as having run; an unstubbed one throws below,
+    // which is what n8n does for a node that never executed.
+    isExecuted: true,
   });
   const $input = wrap(input.map((j) => ({ json: j })));
   const $ = (name) => {
@@ -852,6 +855,41 @@ test("closed and unnamed places are dropped", () => {
   body.output.data.items[0].permanentlyClosed = true;
   body.output.data.items[1].name = "";
   eq(normalizeTreg({ statusCode: 200, body }).length, 3, "two dropped");
+});
+
+group("01 — AI call returns the model's answer, not the log row");
+
+const parsedOk = { valid: true, ok: true, data: { message: "Hello" }, model: "gemini-3.8-flash",
+                   prompt_key: "web_pitch_message", prompt_version: "v1", input_tokens: 10,
+                   output_tokens: 20, cost_usd: 0.0001, lead_id: "L1", attempt: 1 };
+
+test("Return Result hands back the parsed data, whatever the log insert returned", () => {
+  const [o] = runNode("01_ai_call", "Return Result", {
+    input: [{ id: 99 }],                          // what Log AI Call actually outputs
+    nodes: { "Parse & Validate": parsedOk },
+  });
+  eq(o.json.data, { message: "Hello" }, "data");
+  eq(o.json.model, "gemini-3.8-flash", "model");
+});
+
+test("a valid retry wins over the failed first attempt", () => {
+  const [o] = runNode("01_ai_call", "Return Result", {
+    input: [{ id: 99 }],
+    nodes: { "Parse & Validate": { valid: false, error: "invalid_json" },
+             "Parse & Validate (Retry)": { ...parsedOk, data: { message: "Second" }, attempt: 2 } },
+  });
+  eq(o.json.data, { message: "Second" }, "retry data");
+});
+
+test("Return Failure carries the real error, not the dead-letter row", () => {
+  const [o] = runNode("01_ai_call", "Return Failure", {
+    input: [{ id: 7 }],
+    nodes: { "Parse & Validate": { valid: false, error: "invalid_json", detail: "x" },
+             "Parse & Validate (Retry)": { valid: false, error: "gemini_http_429", detail: "y",
+                                           prompt_key: "k", lead_id: "L1" } },
+  });
+  eq(o.json.ok, false, "ok");
+  eq(o.json.error, "gemini_http_429", "the last attempt's error");
 });
 
 group("20 — offer-aware triage and decision");

@@ -342,7 +342,9 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ textQuery: $json.query_term + ' in ' + ($json.area ? $json.area + ', ' : '') + $json.city, maxResultCount: 20, locationBias: { circle: { center: { latitude: $json.bbox.lat, longitude: $json.bbox.lng }, radius: $json.bbox.radius_m } } }) }}"
+        "jsonBody": "={{ JSON.stringify({ textQuery: $json.query_term + ' in ' + ($json.area ? $json.area + ', ' : '') + $json.city, maxResultCount: 20, locationBias: { circle: { center: { latitude: $json.bbox.lat, longitude: $json.bbox.lng }, radius: $json.bbox.radius_m } } }) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth"
       },
       "id": "wf10-10",
       "name": "Places Text Search",
@@ -428,7 +430,9 @@
               "value": "id,displayName,formattedAddress,location,websiteUri,internationalPhoneNumber,nationalPhoneNumber,primaryType,userRatingCount,rating,editorialSummary,businessStatus"
             }
           ]
-        }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth"
       },
       "id": "wf10-13",
       "name": "Place Details (new only)",
@@ -507,7 +511,9 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.treg_body) }}"
+        "jsonBody": "={{ JSON.stringify($json.treg_body) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
       },
       "id": "wf10-16",
       "name": "Treg Maps Search",
