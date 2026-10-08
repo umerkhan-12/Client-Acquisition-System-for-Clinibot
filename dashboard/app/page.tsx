@@ -71,7 +71,7 @@ export default async function Page() {
     <main>
       <header className="top">
         <h1>Acquisition pipeline</h1>
-        <span className="sub">Clinibot · Zenvexa · <Link href="/outreach">Website outreach</Link></span>
+        <span className="sub">Clinibot · Zenvexa · <Link href="/leads">Leads</Link> · <Link href="/outreach">Website outreach</Link></span>
       </header>
 
       {warnings.map((w) => (

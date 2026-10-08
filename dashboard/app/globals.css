@@ -126,3 +126,22 @@ a.btn:hover { filter: brightness(1.08); }
 .prio-hot { border-color: var(--bad); color: var(--bad); }
 .prio-high { border-color: var(--warn); color: var(--warn); }
 .prio-medium { border-color: var(--accent); color: var(--accent); }
+
+/* Leads (/leads, /leads/[id]) */
+.filters { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: 1.25rem 0 1rem; }
+.filters input, .filters select { font: inherit; font-size: .84rem; padding: .42rem .55rem; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--panel); color: inherit; min-width: 0; }
+.filters input[name="q"] { flex: 1 1 12rem; }
+.filters input[name="min"] { width: 6.5rem; }
+.btn-link { font-size: .84rem; padding: .42rem .3rem; }
+.detail-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: 1.25rem; }
+.pad { padding: 1rem 1.1rem; }
+.pad h2 { margin-top: .25rem; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: .35rem .9rem; font-size: .88rem; margin: .5rem 0 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.opps { margin: .4rem 0 0; padding-left: 1.1rem; font-size: .88rem; display: grid; gap: .3rem; }
+.note-form { display: grid; gap: .5rem; justify-items: start; margin-bottom: .75rem; }
+.timeline { list-style: none; margin: 0; padding: 0; font-size: .86rem; }
+.timeline li { padding: .55rem .9rem; border-bottom: 1px solid var(--border); }
+.timeline li:last-child { border-bottom: none; }

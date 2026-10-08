@@ -695,6 +695,45 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 17. Lead workspace: notes and stages through narrow functions ='
+
+DO $$
+DECLARE r jsonb; lead uuid; st acq.lead_status; n int; denied boolean := false;
+BEGIN
+  r := acq.upsert_lead_for_offer(jsonb_build_object(
+         'market_code', 'PK', 'offer', 'WEB', 'clinic_name', 'Stage Test Bistro', 'city', 'Karachi',
+         'phone', '03009990005', 'category', 'RESTAURANT', 'source', 'TREG_MAPS',
+         'source_url', 'https://maps.example/stage'));
+  lead := (r->>'lead_id')::uuid;
+  UPDATE acq.leads SET status = 'CONTACTED' WHERE id = lead;
+
+  SET LOCAL ROLE acq_dashboard;
+  r := acq.add_lead_note(lead, 'Owner asked for a call on Monday', 'smoke@test');
+  r := acq.set_lead_stage(lead, 'MEETING', 'smoke@test');
+  r := acq.set_lead_stage(lead, 'PROPOSAL', 'smoke@test');
+  SELECT count(*) INTO n FROM acq.v_lead_activity WHERE lead_id = lead AND activity_type IN ('NOTE','PROPOSAL_SENT');
+  BEGIN
+    PERFORM 1 FROM acq.sales_activities LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN denied := true;
+  END;
+  RESET ROLE;
+
+  SELECT status INTO st FROM acq.leads WHERE id = lead;
+  IF st <> 'INTERESTED' OR n <> 2 OR NOT denied THEN
+    RAISE EXCEPTION 'FAIL: workspace: status %, timeline rows %, table denied %', st, n, denied;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM acq.v_lead_list WHERE id = lead AND proposal_sent_at IS NOT NULL AND phone IS NOT NULL) THEN
+    RAISE EXCEPTION 'FAIL: v_lead_list missing proposal or phone';
+  END IF;
+
+  -- An opted-out lead cannot be walked back from the dashboard either.
+  UPDATE acq.leads SET opt_out = true WHERE id = lead;
+  r := acq.set_lead_stage(lead, 'WON', 'smoke@test');
+  IF (r->>'ok')::boolean THEN RAISE EXCEPTION 'FAIL: dashboard moved an opted-out lead to WON'; END IF;
+  RAISE NOTICE 'PASS: notes and stages via the dashboard role; opt-out still wins (%)', r->>'error';
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;

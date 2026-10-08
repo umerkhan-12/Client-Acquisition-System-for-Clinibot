@@ -208,3 +208,30 @@ export async function markDoNotContactForm(formData: FormData): Promise<void> {
   const id = String(formData.get("leadId") ?? "");
   if (id) await markDoNotContact(id);
 }
+
+// ---------------------------------------------------------------------
+// The lead workspace (/leads/[id], migration 014). Notes and stage moves go
+// through SECURITY DEFINER functions; a stage move still passes through
+// transition_lead(), so an opted-out lead cannot be moved back from here.
+// ---------------------------------------------------------------------
+
+const LEAD_STAGES = ["CONTACTED", "REPLIED", "MEETING", "PROPOSAL", "WON", "LOST"] as const;
+
+export async function addLeadNoteForm(formData: FormData): Promise<void> {
+  const { email } = await requireUserForAction();
+  const id = String(formData.get("leadId") ?? "");
+  const note = String(formData.get("note") ?? "");
+  if (!id || !note.trim()) return;
+  await callJsonFn(`SELECT acq.add_lead_note($1::uuid, $2, $3) AS r`, [id, note, email]);
+  revalidatePath(`/leads/${id}`);
+}
+
+export async function setLeadStageForm(formData: FormData): Promise<void> {
+  const { email } = await requireUserForAction();
+  const id = String(formData.get("leadId") ?? "");
+  const stage = String(formData.get("stage") ?? "");
+  if (!id || !(LEAD_STAGES as readonly string[]).includes(stage)) return;
+  await callJsonFn(`SELECT acq.set_lead_stage($1::uuid, $2, $3) AS r`, [id, stage, email]);
+  revalidatePath(`/leads/${id}`);
+  revalidatePath("/leads");
+}

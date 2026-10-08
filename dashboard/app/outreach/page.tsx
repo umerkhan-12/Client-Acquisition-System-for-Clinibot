@@ -51,7 +51,7 @@ export default async function OutreachPage() {
     <main>
       <header className="top">
         <h1>Website outreach</h1>
-        <span className="sub">Messages you send by hand · <Link href="/">Clinibot pipeline</Link></span>
+        <span className="sub">Messages you send by hand · <Link href="/leads">Leads</Link> · <Link href="/">Clinibot pipeline</Link></span>
       </header>
 
       <div className="tiles">
