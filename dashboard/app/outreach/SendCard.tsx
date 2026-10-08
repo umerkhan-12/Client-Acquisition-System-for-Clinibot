@@ -11,6 +11,9 @@ export type OutreachRow = {
   lead_score: number; website: string | null; listing_url: string | null;
   rating: string | null; review_count: number | null;
   website_issues: string[] | null; due_at: string;
+  // From acq.lead_intel() (migration 013); absent on older rows.
+  service_label?: string | null; complexity?: string | null;
+  why?: string | null; priority?: string | null;
 };
 
 const ISSUE_LABELS: Record<string, string> = {
@@ -70,6 +73,19 @@ export function SendCard({ row }: { row: OutreachRow }) {
           <> · <a href={row.listing_url} target="_blank" rel="noreferrer">listing</a></>
         )}
       </div>
+
+      {(row.service_label || row.why) && (
+        <div className="intel">
+          {row.service_label && (
+            <div>
+              <b>Pitch:</b> {row.service_label}
+              {row.complexity && <span className="badge">{row.complexity} effort</span>}
+              {row.priority && <span className={`badge prio-${row.priority.toLowerCase()}`}>{row.priority}</span>}
+            </div>
+          )}
+          {row.why && <div className="why">Why: {row.why}</div>}
+        </div>
+      )}
 
       <textarea
         className="msg"

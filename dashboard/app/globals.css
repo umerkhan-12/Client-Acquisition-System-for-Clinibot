@@ -119,3 +119,10 @@ a.btn { display: inline-block; text-decoration: none; font-size: .84rem; font-we
         background: var(--panel); color: var(--text); }
 a.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 a.btn:hover { filter: brightness(1.08); }
+
+.intel { font-size: .82rem; margin: -.2rem 0 .6rem; display: grid; gap: .2rem; }
+.intel .badge { margin-left: .4rem; }
+.intel .why { color: var(--muted); }
+.prio-hot { border-color: var(--bad); color: var(--bad); }
+.prio-high { border-color: var(--warn); color: var(--warn); }
+.prio-medium { border-color: var(--accent); color: var(--accent); }

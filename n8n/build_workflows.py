@@ -2114,6 +2114,26 @@ if (!reachable) {
   if (!hasTel && !hasWa && !hasForm) issues.push('no_contact_cta');
 }
 
+// What the business already offers online, read off the homepage. Absence is
+// only "not seen on the homepage", and only when the page carried enough text
+// to judge: a JavaScript-rendered shell would make everything look missing,
+// so then each feature is null (unknown) rather than false.
+const judgeable = reachable && !parked && text.length >= 400;
+const seen = (re) => judgeable ? re.test(body) : (re.test(body) ? true : null);
+const features = {
+  online_ordering: seen(/(order (online|now)|online order|add to cart|checkout|foodpanda\.|ubereats\.|doordash\.|deliveroo\.|grubhub\.|talabat\.|careem\.com\/food|cheetay\.)/i),
+  booking: seen(/(book (now|online|an? appointment|a table)|reserve (a table|now)|reservation|appointment|calendly\.com|setmore\.com|fresha\.com|booksy\.com|opentable\.|simplybook\.|acuityscheduling\.)/i),
+  ecommerce: seen(/(add to cart|shopping cart|\/cart\b|checkout|woocommerce|cdn\.shopify\.com)/i),
+  whatsapp_button: hasWa,
+};
+const platform =
+  /cdn\.shopify\.com|shopify/i.test(body) ? 'Shopify' :
+  /wixstatic\.com|wix\.com/i.test(body) ? 'Wix' :
+  /squarespace/i.test(body) ? 'Squarespace' :
+  /webflow/i.test(body) ? 'Webflow' :
+  /wp-content|wordpress/i.test(body) ? 'WordPress' :
+  (genM ? genM[1].slice(0, 60) : null);
+
 // An address published on the business's own homepage, recorded with that
 // page as evidence. Prefer one on the site's own domain.
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -2145,7 +2165,7 @@ return [{ json: {
   email: reachable ? (found[0] || null) : null,
   email_url: reachable && found[0] ? lead.homepage : null,
   raw: { error: resp.error ? String(resp.error.message || resp.error).slice(0, 300) : null,
-         text_chars: text.length },
+         text_chars: text.length, features, platform },
 }}];
 """.strip())
 
@@ -2217,6 +2237,7 @@ SELECT l.id, l.clinic_name, l.website, l.city, l.area, l.category, l.lead_score,
        l.raw #>> '{GOOGLE_PLACES,rating}'          AS rating,
        l.raw #>> '{GOOGLE_PLACES,userRatingCount}' AS review_count,
        acq.manual_channel(l)                      AS channel,
+       acq.lead_intel(l.id)                       AS intel,
        (SELECT jsonb_build_object('reachable', a.reachable, 'issues', a.issues,
                                   'title', a.title, 'url', a.url)
           FROM acq.website_audits a
@@ -2253,6 +2274,12 @@ return [{ json: {
       social_page_only: socialOnly,
     },
     audit_json: j.audit || null,
+    // acq.lead_intel(): what is verifiably missing and the one service to
+    // pitch. Only the fields the prompt needs, so nothing internal leaks in.
+    opportunities_json: j.intel ? {
+      recommended_service: j.intel.service_label || null,
+      opportunities: (j.intel.opportunities || []).map(o => o.detail),
+    } : null,
     portfolio_url_or_none: cfg.portfolio_url || '(none — include no link)',
     channel_note: chan.channel === 'PHONE_CALL'
       ? 'This number is a landline. Write it as what to say in the first 20 seconds of a phone call, in the same structure.'

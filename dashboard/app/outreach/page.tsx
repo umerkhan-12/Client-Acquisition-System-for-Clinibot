@@ -32,7 +32,7 @@ export default async function OutreachPage() {
   const [ov, toSend, awaiting] = await Promise.all([
     queryOne<WebOverview>("SELECT * FROM acq.v_web_overview"),
     query<OutreachRow>(
-      `SELECT * FROM acq.v_manual_outreach
+      `SELECT * FROM acq.v_manual_outreach_intel
         WHERE queue = 'TO_SEND'
         ORDER BY step_no DESC, lead_score DESC, due_at
         LIMIT 40`,

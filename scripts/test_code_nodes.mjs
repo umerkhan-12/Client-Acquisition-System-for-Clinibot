@@ -982,6 +982,24 @@ test("a parked domain is flagged; a JavaScript shell with little text is not", (
   ok(!spa.issues.includes("site_parked"), JSON.stringify(spa.issues));
 });
 
+test("ordering, booking and platform are read off the homepage", () => {
+  const filler = "We serve fresh coffee, pastries and brunch every day in Clifton. ".repeat(10);
+  const a = analyze({ statusCode: 200, body:
+    `<html><head><meta name="viewport" content="x"><link rel="stylesheet" href="/wp-content/x.css"></head>
+     <body><p>${filler}</p><a href="https://www.foodpanda.pk/restaurant/x">Order on foodpanda</a>
+     <a href="tel:+923001112223">Call</a></body></html>` });
+  eq(a.raw.features.online_ordering, true, "foodpanda link counts as ordering");
+  eq(a.raw.features.booking, false, "judged and not found");
+  eq(a.raw.platform, "WordPress", "platform");
+});
+
+test("a page too thin to judge reports features as unknown, never missing", () => {
+  const a = analyze({ statusCode: 200, body:
+    `<html><head><meta name="viewport" content="x"></head><body><div id="root"></div></body></html>` });
+  eq(a.raw.features.booking, null, "booking unknown");
+  eq(a.raw.features.online_ordering, null, "ordering unknown");
+});
+
 test("robots.txt Disallow: / keeps the homepage unfetched", () => {
   const out = runNode("25_website_audit", "Apply robots.txt", {
     input: [{ statusCode: 200, body: "User-agent: *\nDisallow: /" }],

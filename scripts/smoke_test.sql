@@ -638,6 +638,63 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 16. Lead intelligence: opportunities from evidence only ======='
+
+DO $$
+DECLARE r jsonb; i jsonb; salon uuid; shell uuid;
+BEGIN
+  -- A busy cafe with no website: build ordering into the first pitch.
+  r := acq.upsert_lead_for_offer(jsonb_build_object(
+         'market_code', 'PK', 'offer', 'WEB', 'clinic_name', 'Intel Test Espresso Bar',
+         'city', 'Karachi', 'area', 'DHA', 'phone', '03009990002', 'category', 'CAFE',
+         'priority_tier', 1, 'source', 'TREG_MAPS', 'source_url', 'https://maps.example/intel1',
+         'raw', jsonb_build_object('GOOGLE_PLACES', jsonb_build_object('userRatingCount', 6166, 'rating', 4.4))));
+  PERFORM acq.compute_score((r->>'lead_id')::uuid, 'DETERMINISTIC');
+  i := acq.lead_intel((r->>'lead_id')::uuid);
+  IF i->>'recommended_service' <> 'WEBSITE_ORDERING' OR i->>'complexity' <> 'MEDIUM'
+     OR i->>'website_status' <> 'NO_WEBSITE' OR i->>'best_channel' <> 'WHATSAPP'
+     OR position('6,166 Google reviews' in i->>'why') = 0
+     OR NOT (i->'opportunities' @> '[{"code":"NO_ONLINE_ORDERING"}]') THEN
+    RAISE EXCEPTION 'FAIL: cafe intel wrong: %', i;
+  END IF;
+  RAISE NOTICE 'PASS: busy cafe without a site -> % (%), priority %', i->>'service_label', i->>'complexity', i->>'priority';
+
+  -- A salon whose site was audited as weak and as having no booking.
+  r := acq.upsert_lead_for_offer(jsonb_build_object(
+         'market_code', 'PK', 'offer', 'WEB', 'clinic_name', 'Intel Test Glow Salon',
+         'city', 'Karachi', 'website', 'http://glow-salon-intel.pk', 'phone', '03009990003',
+         'category', 'SALON', 'priority_tier', 1, 'source', 'TREG_MAPS', 'source_url', 'https://maps.example/intel2'));
+  salon := (r->>'lead_id')::uuid;
+  PERFORM acq.record_website_audit(jsonb_build_object(
+    'lead_id', salon, 'url', 'http://glow-salon-intel.pk/', 'robots_allowed', true, 'reachable', true,
+    'issues', '["not_mobile_friendly","no_https"]'::jsonb, 'has_tel_link', true,
+    'raw', jsonb_build_object('features', jsonb_build_object('booking', false), 'platform', 'Wix')));
+  i := acq.lead_intel(salon);
+  IF i->>'recommended_service' <> 'REDESIGN' OR i->>'website_status' <> 'WEAK' OR i->>'platform' <> 'Wix'
+     OR NOT (i->'opportunities' @> '[{"code":"NO_ONLINE_BOOKING"}]')
+     OR position('not set up for phones' in i->>'why') = 0 THEN
+    RAISE EXCEPTION 'FAIL: salon intel wrong: %', i;
+  END IF;
+  RAISE NOTICE 'PASS: weak salon site -> redesign, booking flagged, platform recorded';
+
+  -- A homepage too thin to judge (features null) claims nothing about booking.
+  r := acq.upsert_lead_for_offer(jsonb_build_object(
+         'market_code', 'PK', 'offer', 'WEB', 'clinic_name', 'Intel Test Shell Studio',
+         'city', 'Karachi', 'website', 'https://shell-studio-intel.pk', 'phone', '03009990004',
+         'category', 'SALON', 'priority_tier', 1, 'source', 'TREG_MAPS', 'source_url', 'https://maps.example/intel3'));
+  shell := (r->>'lead_id')::uuid;
+  PERFORM acq.record_website_audit(jsonb_build_object(
+    'lead_id', shell, 'url', 'https://shell-studio-intel.pk/', 'robots_allowed', true, 'reachable', true,
+    'issues', '[]'::jsonb, 'has_tel_link', true,
+    'raw', jsonb_build_object('features', jsonb_build_object('booking', null))));
+  i := acq.lead_intel(shell);
+  IF i->'opportunities' @> '[{"code":"NO_ONLINE_BOOKING"}]' OR i->>'recommended_service' IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL: an unjudgeable page produced a claim: %', i;
+  END IF;
+  RAISE NOTICE 'PASS: a page too thin to judge claims nothing';
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;

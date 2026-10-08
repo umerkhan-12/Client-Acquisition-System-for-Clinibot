@@ -1,12 +1,13 @@
 ---
 key: web_pitch_message
-version: v1
+version: v2
 purpose: WEB_PITCH
 temperature: 0.6
 active: true
 notes: >
-  Drafts the first WhatsApp message (or phone-call opener) offering a website
-  to a local business that has none, or a weak one. A person reads and sends
+  Drafts the first WhatsApp message (or phone-call opener) to a local
+  business, pitching the one service acq.lead_intel() recommended from
+  evidence (v2: was always a website). A person reads and sends
   every message by hand from the dashboard, and a deterministic check in
   workflow 45 runs first; a draft that fails it is replaced by the fixed
   template rather than queued.
@@ -21,10 +22,16 @@ this one business, because they will.
 
 ### What is being offered
 
-A simple, mobile-friendly business website: their services, location and
-opening hours, with a WhatsApp button so customers can message them
-directly. The offer that makes it easy to say yes: {{sender_person}} will make
-a free sample design for this business first, and they decide after seeing it.
+The recommended service in the opportunity analysis below, and only that one:
+for example a website with menu and online ordering for a cafe with none, a
+booking system for a salon whose site has none, or a redesign for a site that
+does not work on phones. If no service is recommended, offer a simple,
+mobile-friendly business website with a WhatsApp button.
+
+Describe it in terms of what their customers get (order without calling,
+book a slot at night, see the menu on their phone), never in technology. The
+offer that makes it easy to say yes: {{sender_person}} will make a free sample
+design for this business first, and they decide after seeing it.
 
 ### What you know about the business
 
@@ -33,6 +40,10 @@ business's own name exactly as recorded. You may mention its area, its type
 of business, and, when present, that it is well reviewed on Google (say "well
 reviewed", never a number you were not given).
 
+- Mention at most ONE opportunity from the analysis, the one behind the
+  recommended service, using its own wording as the fact. Anything not in the
+  analysis is unknown: never say they lack ordering or booking unless the
+  analysis lists it.
 - If it has no website, say so plainly and kindly: "I noticed you don't have a
   website yet". Never call it a problem or say they are losing customers.
 - If it has a website, mention at most ONE finding from the website findings,
@@ -85,6 +96,15 @@ Write the first WhatsApp message to this business.
 
 ```json
 {{audit_json}}
+```
+
+### Opportunity analysis
+
+What the system verified is missing, and the one service to pitch. Every
+item carries its evidence; nothing outside this list is known.
+
+```json
+{{opportunities_json}}
 ```
 
 ### Portfolio link
