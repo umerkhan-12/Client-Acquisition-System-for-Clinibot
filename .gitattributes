@@ -1,0 +1,2 @@
+*.sh text eol=lf
+ops/railway/Dockerfile text eol=lf
