@@ -235,3 +235,37 @@ export async function setLeadStageForm(formData: FormData): Promise<void> {
   revalidatePath(`/leads/${id}`);
   revalidatePath("/leads");
 }
+
+// ---------------------------------------------------------------------
+// One-click WhatsApp (migration 015). The button only queues; workflow 47
+// sends at a safe pace through the database's claimer. Every entry point
+// re-checks the signed-in user, like the actions above.
+// ---------------------------------------------------------------------
+
+export async function queueWhatsAppForm(formData: FormData): Promise<void> {
+  const { email } = await requireUserForAction();
+  const id = String(formData.get("outreachId") ?? "");
+  if (!id) return;
+  await callJsonFn(`SELECT acq.queue_whatsapp_send($1::uuid, $2, $3) AS r`,
+    [id, String(formData.get("message") ?? ""), email]);
+  revalidatePath("/outreach");
+}
+
+export async function unqueueWhatsAppForm(formData: FormData): Promise<void> {
+  const { email } = await requireUserForAction();
+  const id = String(formData.get("outreachId") ?? "");
+  if (!id) return;
+  await callJsonFn(`SELECT acq.unqueue_whatsapp_send($1::uuid, $2) AS r`, [id, email]);
+  revalidatePath("/outreach");
+}
+
+const FAILURE_ACTIONS = ["RETRY", "SENT_BY_HAND", "BACK_TO_MANUAL"] as const;
+
+export async function resolveWhatsAppFailureForm(formData: FormData): Promise<void> {
+  const { email } = await requireUserForAction();
+  const id = String(formData.get("outreachId") ?? "");
+  const action = String(formData.get("action") ?? "");
+  if (!id || !(FAILURE_ACTIONS as readonly string[]).includes(action)) return;
+  await callJsonFn(`SELECT acq.resolve_whatsapp_failure($1::uuid, $2, $3) AS r`, [id, action, email]);
+  revalidatePath("/outreach");
+}

@@ -110,6 +110,37 @@ services:
       - ./ops/supabase-root-2021.crt:/opt/certs/supabase-root-2021.crt:ro
     networks: [acq]
 
+  # WhatsApp HTTP API for one-click WEB outreach (migration 015, workflows
+  # 47/48). Opt-in: `--profile whatsapp`. Link it to a SEPARATE outreach
+  # number, never a personal one: it drives WhatsApp Web, and a number that
+  # sends cold messages can be banned. Pace is enforced by
+  # acq.claim_whatsapp_send(), not here.
+  #
+  # Loopback only, like n8n: the dashboard (QR pairing) is reached at
+  # http://localhost:3000/dashboard, and n8n calls it as http://waha:3000.
+  waha:
+    image: devlikeapro/waha:${WAHA_VERSION:-latest}
+    container_name: waha-acq
+    restart: unless-stopped
+    profiles: ["whatsapp"]
+    ports:
+      - "127.0.0.1:${WAHA_HOST_PORT:-3000}:3000"
+    mem_limit: ${WAHA_MEM_LIMIT:-400m}
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      WHATSAPP_SWAGGER_USERNAME: admin
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      # GOWS: a Go client, no headless Chrome, so it fits beside n8n.
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WAHA_PRINT_QR: "false"
+      TZ: ${GENERIC_TIMEZONE:-Asia/Karachi}
+    volumes:
+      # The paired session. Lose it and the phone must scan the QR again.
+      - waha_sessions:/app/.sessions
+    networks: [acq]
+
   caddy:
     image: caddy:2-alpine
     container_name: caddy-acq
@@ -134,6 +165,7 @@ services:
 
 volumes:
   n8n_acq_data:
+  waha_sessions:
   caddy_data:      # holds the TLS certificates — losing it means re-issuing
   caddy_config:
 

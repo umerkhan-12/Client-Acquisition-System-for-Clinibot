@@ -53,9 +53,14 @@ weakening one, stop and raise it.
 4. **All outbound mail goes through `acq.claim_send_slots()`.** It is the only
    path to SMTP. Never add a second send path — caps, sending window,
    per-domain limits, warm-up ramp and suppression are applied there in one
-   transaction. The WEB offer's `acq.manual_outreach` queue is not a send path:
-   the system drafts, a person sends from their own phone. Keep it that way;
-   automated WhatsApp from a personal number gets the number banned.
+   transaction. WEB WhatsApp messages have exactly one automated path of
+   their own: a person clicks Send in the dashboard (`queue_whatsapp_send`),
+   and workflow 47 sends through WAHA only what `acq.claim_whatsapp_send()`
+   releases — on-switch, sending hours, daily cap and gap between sends, one
+   at a time, never retried blind (migration 015). Nothing is sent that a
+   person did not click, and WAHA is linked to a separate outreach number,
+   never a personal or Clinibot one: unofficial WhatsApp clients get numbers
+   banned.
 5. **Sending is refused while `company.postal_address` or
    `unsubscribe.base_url` is empty.** Both ship unset on purpose.
 

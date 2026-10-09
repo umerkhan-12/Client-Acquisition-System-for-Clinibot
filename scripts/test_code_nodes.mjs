@@ -1089,6 +1089,33 @@ test("a failed AI call becomes the template, never an empty queue row", () => {
   ok(r.notes.startsWith("ai_failed"), r.notes);
 });
 
+group("47 — WhatsApp send result");
+
+function waRead(resp) {
+  return runNode("47_whatsapp_send", "Read WAHA Answer", {
+    input: [resp],
+    nodes: { "Claim Next Message": { outreach_id: "M1" } },
+  })[0].json;
+}
+
+test("a 201 with a message id is a send, in body or in data", () => {
+  const a = waRead({ statusCode: 201, body: { id: "true_923001234567@c.us_3EB0ABC" } });
+  eq(a.ok, true, "ok"); eq(a.api_message_id, "true_923001234567@c.us_3EB0ABC", "id"); eq(a.outreach_id, "M1", "row");
+  const b = waRead({ statusCode: 200, data: { id: { _serialized: "true_92300@c.us_X" } } });
+  eq(b.ok, true, "ok via data"); eq(b.api_message_id, "true_92300@c.us_X", "serialized id");
+});
+
+test("a refusal or a 2xx without an id is recorded as a failure with the reason", () => {
+  const a = waRead({ statusCode: 422, body: { message: "Session default is not ready" } });
+  eq(a.ok, false, "ok"); ok(a.error.includes("422") && a.error.includes("not ready"), a.error);
+  eq(waRead({ statusCode: 200, body: {} }).ok, false, "no id");
+});
+
+test("no response at all (timeout) is a failure, never a send", () => {
+  const a = waRead({ error: { message: "timeout of 45000ms exceeded" } });
+  eq(a.ok, false, "ok"); ok(a.error.startsWith("HTTP no response"), a.error);
+});
+
 // ============================================================ summary
 
 console.log(

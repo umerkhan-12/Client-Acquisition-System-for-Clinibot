@@ -38,6 +38,10 @@ CRED = {
     # Header Auth, header name X-Treg-Token. Use a capped agent token
     # (`treg org agent-new acq-n8n --cap 500`), never a person's own login.
     "treg":     {"httpHeaderAuth":  {"id": "REPLACE_TREG",     "name": "treg-token"}},
+    # Header Auth, header name X-Api-Key: the WAHA_API_KEY of the WAHA server.
+    "waha":     {"httpHeaderAuth":  {"id": "REPLACE_WAHA",     "name": "waha-api-key"}},
+    # Header Auth on workflow 48's webhook: the header WAHA is configured to send.
+    "waha_hook": {"httpHeaderAuth": {"id": "REPLACE_WAHA_HOOK", "name": "waha-webhook-secret"}},
 }
 
 # Set as the error workflow on every other workflow after import.
@@ -2390,6 +2394,87 @@ VALUES ('45_web_pitch', $1, 'SUCCESS',
 
 
 # ==========================================================================
+# 47 — WhatsApp Sender
+#
+# Sends WEB messages a person queued from the dashboard, through WAHA on the
+# separate outreach number. One message per run at most: the claim applies
+# the on-switch, sending hours, daily cap and the gap between sends under an
+# advisory lock (migration 015). The HTTP call is never retried — a timeout
+# may still have delivered, and the same pitch twice gets the number
+# reported. An unclear outcome becomes FAILED for a person to check.
+# ==========================================================================
+def wf_whatsapp_send():
+    b = Builder("ACQ 47 — WhatsApp Sender", "wf47")
+
+    t = cron(b, "Every 2 Minutes", "*/2 * * * *")
+
+    claim = pg(b, "Claim Next Message",
+               "SELECT * FROM acq.claim_whatsapp_send($1) WHERE reason = 'claimed'",
+               replacement="={{ [ 'wf47:' + $execution.id ] }}", always_output=True, retries=1)
+
+    gate = nonempty_gate(b, "outreach_id")
+    idle = b.node("Nothing To Send", "n8n-nodes-base.noOp", {}, tv=1)
+
+    send = http(b, "WAHA Send Text", "POST", "={{ $json.base_url }}/api/sendText",
+                body="={{ JSON.stringify({ session: $json.session, chatId: $json.chat_id, text: $json.message }) }}",
+                creds="waha", timeout=45000, retries=0, on_error="continueRegularOutput",
+                notes="Never retried: a timed-out send may have been delivered.")
+
+    read = code(b, "Read WAHA Answer", r"""
+const claim = $('Claim Next Message').first().json;
+const r = $input.first().json || {};
+const status = Number(r.statusCode || 0);
+const body = r.body ?? r.data ?? {};
+const id = body && (typeof body.id === 'string' ? body.id : body.id && (body.id._serialized || body.id.id));
+const ok = status >= 200 && status < 300 && !!id;
+let error = null;
+if (!ok) {
+  const detail = typeof body === 'string' ? body : JSON.stringify(body || r.error || {});
+  error = `HTTP ${status || 'no response'}: ${String(detail).slice(0, 300)}`;
+}
+return [{ json: { outreach_id: claim.outreach_id, ok, api_message_id: id || null, error } }];
+""".strip())
+
+    record = pg(b, "Record Result",
+                "SELECT acq.record_whatsapp_result($1::uuid, $2::boolean, $3, $4) AS result",
+                replacement="={{ [ $json.outreach_id, $json.ok, $json.api_message_id || '', $json.error || '' ] }}")
+
+    b.chain(t, claim, gate)
+    b.connect(gate, send, src_out=0)
+    b.connect(gate, idle, src_out=1)
+    b.chain(send, read, record)
+    return b.build()
+
+
+# ==========================================================================
+# 48 — WhatsApp Inbound
+#
+# WAHA posts every incoming message here. The database decides what it
+# means (migration 015): a reply from a lead cancels the follow-up, a stop
+# word opts the number out, anything else is ignored. Header auth keeps
+# strangers from posting fake replies.
+# ==========================================================================
+def wf_whatsapp_inbound():
+    b = Builder("ACQ 48 — WhatsApp Inbound", "wf48")
+
+    hook = b.node("WAHA Webhook", "n8n-nodes-base.webhook", {
+        "httpMethod": "POST",
+        "path": "waha",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {},
+    }, tv=2, creds="waha_hook",
+        notes="In WAHA, point the session webhook at this URL with events "
+              "'message' and the same header as the waha-webhook-secret credential.")
+
+    record = pg(b, "Record Inbound", "SELECT acq.record_whatsapp_inbound($1::jsonb) AS result",
+                replacement="={{ [ JSON.stringify($json.body || {}) ] }}")
+
+    b.chain(hook, record)
+    return b.build()
+
+
+# ==========================================================================
 # 50 — Outreach Send
 #
 # The only workflow permitted to talk to SMTP. Initial emails and follow-ups
@@ -3601,6 +3686,8 @@ WORKFLOWS = [
     ("30_ai_research",          wf_research),
     ("40_personalization",      wf_personalization),
     ("45_web_pitch",            wf_web_pitch),
+    ("47_whatsapp_send",        wf_whatsapp_send),
+    ("48_whatsapp_inbound",     wf_whatsapp_inbound),
     ("50_outreach_send",        wf_send),
     ("60_inbox_monitor",        wf_inbox),
     ("70_reply_classification", wf_classification),

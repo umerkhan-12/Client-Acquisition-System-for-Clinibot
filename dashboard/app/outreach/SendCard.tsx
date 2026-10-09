@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { markManualSentForm, skipManualForm } from "../actions";
+import { markManualSentForm, queueWhatsAppForm, skipManualForm } from "../actions";
 
 export type OutreachRow = {
   id: string; lead_id: string; step_no: number; channel: "WHATSAPP" | "PHONE_CALL";
@@ -31,7 +31,7 @@ const ISSUE_LABELS: Record<string, string> = {
  * when "Mark as sent" is pressed is what gets recorded, so the log matches
  * what the business actually received.
  */
-export function SendCard({ row }: { row: OutreachRow }) {
+export function SendCard({ row, apiEnabled = false }: { row: OutreachRow; apiEnabled?: boolean }) {
   const [text, setText] = useState(row.message);
   const [copied, setCopied] = useState(false);
 
@@ -96,7 +96,16 @@ export function SendCard({ row }: { row: OutreachRow }) {
       />
 
       <div className="actions wrap">
-        {row.channel === "WHATSAPP" ? (
+        {row.channel === "WHATSAPP" && apiEnabled ? (
+          <>
+            <form action={queueWhatsAppForm}>
+              <input type="hidden" name="outreachId" value={row.id} />
+              <input type="hidden" name="message" value={text} />
+              <button type="submit" className="primary">Send via WhatsApp</button>
+            </form>
+            <a className="btn" href={waHref} target="_blank" rel="noreferrer">Open in my WhatsApp</a>
+          </>
+        ) : row.channel === "WHATSAPP" ? (
           <a className="btn primary" href={waHref} target="_blank" rel="noreferrer">
             Open in WhatsApp
           </a>

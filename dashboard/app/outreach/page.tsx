@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { query, queryOne } from "@/lib/db";
-import { recordManualOutcomeForm } from "../actions";
+import { recordManualOutcomeForm, resolveWhatsAppFailureForm, unqueueWhatsAppForm } from "../actions";
 import { SendCard, type OutreachRow } from "./SendCard";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +8,14 @@ export const dynamic = "force-dynamic";
 type WebOverview = {
   web_leads: number; web_qualified: number; to_send: number; sent_today: number;
   pitched_total: number; replied: number; interested: number; customers: number;
+};
+type WaStatus = {
+  api_enabled: boolean; daily_cap: number; window_start: string; window_end: string;
+  min_gap_seconds: number; sent_today: number; queued: number; failed: number;
+};
+type WaQueueRow = {
+  id: string; business_name: string; step_no: number; to_value: string; status: string;
+  queued_at: string | null; last_error: string | null;
 };
 type SentRow = {
   id: string; lead_id: string; step_no: number; channel: string; to_value: string;
@@ -29,7 +37,7 @@ function ago(v: string) {
 }
 
 export default async function OutreachPage() {
-  const [ov, toSend, awaiting] = await Promise.all([
+  const [ov, toSend, awaiting, wa, waQueue] = await Promise.all([
     queryOne<WebOverview>("SELECT * FROM acq.v_web_overview"),
     query<OutreachRow>(
       `SELECT * FROM acq.v_manual_outreach_intel
@@ -44,7 +52,13 @@ export default async function OutreachPage() {
         WHERE queue = 'AWAITING_REPLY'
         ORDER BY lead_id, sent_at DESC`,
     ),
+    queryOne<WaStatus>("SELECT * FROM acq.v_whatsapp_status"),
+    query<WaQueueRow>(
+      `SELECT id, business_name, step_no, to_value, status, queued_at, last_error
+         FROM acq.v_whatsapp_queue ORDER BY status = 'FAILED' DESC, queued_at`,
+    ),
   ]);
+  const apiOn = !!wa?.api_enabled;
   awaiting.sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
 
   return (
@@ -64,10 +78,66 @@ export default async function OutreachPage() {
         <Tile label="Website leads" value={ov?.web_leads} />
       </div>
 
+      {(apiOn || waQueue.length > 0) && (
+        <>
+          <h2>WhatsApp sending queue ({waQueue.length})</h2>
+          <p className="hint">
+            {apiOn
+              ? <>Sent from the outreach number one at a time, {Math.round((wa?.min_gap_seconds ?? 240) / 60)}+ minutes apart,
+                  between {wa?.window_start} and {wa?.window_end}. {wa?.sent_today ?? 0} of {wa?.daily_cap} sent today.</>
+              : <>Sending through the API is switched off. Queued messages wait until it is on.</>}
+          </p>
+          <div className="panel">
+            {waQueue.length === 0 && <div className="empty">Nothing queued. Press Send via WhatsApp on a message below.</div>}
+            {waQueue.length > 0 && (
+              <table>
+                <thead><tr><th>Business</th><th>Number</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  {waQueue.map((q) => (
+                    <tr key={q.id}>
+                      <td>{q.business_name}{q.step_no > 0 && <span className="muted"> · follow-up</span>}</td>
+                      <td className="num">{q.to_value}</td>
+                      <td>
+                        <span className={`badge${q.status === "FAILED" ? " prio-hot" : ""}`}>
+                          {q.status === "QUEUED" ? "waiting its turn" : q.status === "SENDING" ? "sending now" : "failed"}
+                        </span>
+                        {q.last_error && <div className="muted" style={{ fontSize: ".78rem", marginTop: ".3rem" }}>{q.last_error}</div>}
+                      </td>
+                      <td>
+                        <div className="actions wrap">
+                          {q.status === "QUEUED" && (
+                            <form action={unqueueWhatsAppForm}>
+                              <input type="hidden" name="outreachId" value={q.id} />
+                              <button type="submit">Cancel</button>
+                            </form>
+                          )}
+                          {q.status === "FAILED" && ([
+                            ["RETRY", "Try again"], ["SENT_BY_HAND", "It did go out"], ["BACK_TO_MANUAL", "I'll send it myself"],
+                          ] as const).map(([action, label]) => (
+                            <form key={action} action={resolveWhatsAppFailureForm}>
+                              <input type="hidden" name="outreachId" value={q.id} />
+                              <input type="hidden" name="action" value={action} />
+                              <button type="submit">{label}</button>
+                            </form>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
       <h2>Send these ({toSend.length})</h2>
       <p className="hint">
-        Read each message, change anything that doesn&apos;t sound like you, send it from your phone,
-        then press <b>Mark as sent</b>. Send them a few minutes apart, not all at once.
+        {apiOn
+          ? <>Read each message, change anything that doesn&apos;t sound like you, then press <b>Send via WhatsApp</b>.
+              It joins the queue above and goes out from the outreach number at a safe pace.</>
+          : <>Read each message, change anything that doesn&apos;t sound like you, send it from your phone,
+              then press <b>Mark as sent</b>. Send them a few minutes apart, not all at once.</>}
       </p>
       <div className="panel">
         {toSend.length === 0 && (
@@ -75,7 +145,7 @@ export default async function OutreachPage() {
             Nothing to send. New drafts appear here when workflow 45 runs, up to the daily limit.
           </div>
         )}
-        {toSend.map((r) => <SendCard key={r.id} row={r} />)}
+        {toSend.map((r) => <SendCard key={r.id} row={r} apiEnabled={apiOn} />)}
       </div>
 
       <h2>Waiting for a reply ({awaiting.length})</h2>

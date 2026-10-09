@@ -23,6 +23,8 @@ placeholders you replace once on import.
 - [ACQ 30 — AI Research](#acq-30-ai-research) — `30_ai_research.json`
 - [ACQ 40 — Personalization](#acq-40-personalization) — `40_personalization.json`
 - [ACQ 45 — Web Pitch Drafts](#acq-45-web-pitch-drafts) — `45_web_pitch.json`
+- [ACQ 47 — WhatsApp Sender](#acq-47-whatsapp-sender) — `47_whatsapp_send.json`
+- [ACQ 48 — WhatsApp Inbound](#acq-48-whatsapp-inbound) — `48_whatsapp_inbound.json`
 - [ACQ 50 — Outreach Send](#acq-50-outreach-send) — `50_outreach_send.json`
 - [ACQ 60 — Inbox Monitor](#acq-60-inbox-monitor) — `60_inbox_monitor.json`
 - [ACQ 70 — Reply Classification](#acq-70-reply-classification) — `70_reply_classification.json`
@@ -382,6 +384,58 @@ Then the **guardrails** — a deterministic pass the prompt cannot talk its way 
 - **Record Run** — `INSERT INTO acq.workflow_runs (workflow_key, execution_id, status, items_out, `
 
 **Error handling** — retries on: `Load Settings`, `Claim Leads To Pitch`, `Record Draft`, `Record Run`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+
+---
+
+## ACQ 47 — WhatsApp Sender
+
+**File** `n8n/workflows/47_whatsapp_send.json` · **7 nodes**
+
+
+
+**Trigger** — Schedule trigger (cron `*/2 * * * *`)
+
+**Credentials** — `acq-postgres`, `gemini-api-key`
+
+| # | Node | Type | Detail |
+|---|---|---|---|
+| 1 | Every 2 Minutes | Schedule trigger | cron `*/2 * * * *` |
+| 2 | Claim Next Message | Postgres | `SELECT * FROM acq.claim_whatsapp_send($1) WHERE reason = 'claimed'` |
+| 3 | Anything Claimed? | IF |  |
+| 4 | Nothing To Send | No-op |  |
+| 5 | WAHA Send Text | HTTP | `POST =…/api/sendText` |
+| 6 | Read WAHA Answer | Code |  |
+| 7 | Record Result | Postgres | `SELECT acq.record_whatsapp_result($1::uuid, $2::boolean, $3, $4) AS result` |
+
+**Database operations**
+
+- **Claim Next Message** — `SELECT * FROM acq.claim_whatsapp_send($1) WHERE reason = 'claimed'`
+- **Record Result** — `SELECT acq.record_whatsapp_result($1::uuid, $2::boolean, $3, $4) AS result`
+
+**Error handling** — retries on: `Claim Next Message`, `Record Result`. continues past failure at: `WAHA Send Text`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
+
+---
+
+## ACQ 48 — WhatsApp Inbound
+
+**File** `n8n/workflows/48_whatsapp_inbound.json` · **2 nodes**
+
+
+
+**Trigger** — Webhook (`POST /waha`)
+
+**Credentials** — `acq-postgres`, `gemini-api-key`
+
+| # | Node | Type | Detail |
+|---|---|---|---|
+| 1 | WAHA Webhook | Webhook | `POST /waha` |
+| 2 | Record Inbound | Postgres | `SELECT acq.record_whatsapp_inbound($1::jsonb) AS result` |
+
+**Database operations**
+
+- **Record Inbound** — `SELECT acq.record_whatsapp_inbound($1::jsonb) AS result`
+
+**Error handling** — retries on: `Record Inbound`. Unhandled failures go to *ACQ 00 — Error Handler*, which writes an `acq.dead_letters` row and alerts.
 
 ---
 

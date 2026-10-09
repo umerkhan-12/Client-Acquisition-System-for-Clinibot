@@ -734,6 +734,91 @@ BEGIN
 END $$;
 
 \echo ''
+\echo '=== 18. WhatsApp API: queued by a person, paced by the database ===='
+
+DO $$
+DECLARE r jsonb; a uuid; b uuid; ma uuid; mb uuid; c record; st acq.lead_status; n int;
+BEGIN
+  r := acq.upsert_lead_for_offer(jsonb_build_object('market_code', 'PK', 'offer', 'WEB',
+         'clinic_name', 'WA Test Cafe', 'city', 'Karachi', 'phone', '0300-9990011',
+         'category', 'CAFE', 'source', 'TREG_MAPS', 'source_url', 'https://maps.example/wa1'));
+  a := (r->>'lead_id')::uuid;
+  r := acq.upsert_lead_for_offer(jsonb_build_object('market_code', 'PK', 'offer', 'WEB',
+         'clinic_name', 'WA Test Bakery', 'city', 'Karachi', 'phone', '+92 300 9990012',
+         'category', 'BAKERY', 'source', 'TREG_MAPS', 'source_url', 'https://maps.example/wa2'));
+  b := (r->>'lead_id')::uuid;
+  UPDATE acq.leads SET status = 'READY_FOR_REVIEW' WHERE id IN (a, b);
+  INSERT INTO acq.manual_outreach (lead_id, channel, to_value, message, draft_source)
+  VALUES (a, 'WHATSAPP', '0300-9990011', 'Hello WA Test Cafe, a short note about your menu online.', 'TEMPLATE')
+  RETURNING id INTO ma;
+  INSERT INTO acq.manual_outreach (lead_id, channel, to_value, message, draft_source)
+  VALUES (b, 'WHATSAPP', '+92 300 9990012', 'Hello WA Test Bakery, a short note about ordering online.', 'TEMPLATE')
+  RETURNING id INTO mb;
+
+  -- Off by default: nothing can even be queued.
+  r := acq.queue_whatsapp_send(ma, NULL, 'smoke@test');
+  IF r->>'error' IS DISTINCT FROM 'api_disabled' THEN RAISE EXCEPTION 'FAIL: queued while disabled: %', r; END IF;
+
+  UPDATE acq.settings SET value = 'true'::jsonb  WHERE key = 'whatsapp.api_enabled';
+  UPDATE acq.settings SET value = '"00:00"'::jsonb WHERE key = 'whatsapp.window_start';
+  UPDATE acq.settings SET value = '"23:59"'::jsonb WHERE key = 'whatsapp.window_end';
+
+  SET LOCAL ROLE acq_dashboard;
+  r := acq.queue_whatsapp_send(ma, 'Hello WA Test Cafe, edited before sending.', 'smoke@test');
+  IF NOT (r->>'ok')::boolean THEN RAISE EXCEPTION 'FAIL: dashboard could not queue: %', r; END IF;
+  r := acq.queue_whatsapp_send(mb, NULL, 'smoke@test');
+  SELECT count(*) INTO n FROM acq.v_whatsapp_queue WHERE status = 'QUEUED';
+  RESET ROLE;
+  IF n <> 2 THEN RAISE EXCEPTION 'FAIL: expected 2 queued, saw %', n; END IF;
+
+  SELECT * INTO c FROM acq.claim_whatsapp_send('smoke');
+  IF c.reason <> 'claimed' OR c.outreach_id <> ma OR c.chat_id <> '923009990011@c.us'
+     OR c.message <> 'Hello WA Test Cafe, edited before sending.' THEN
+    RAISE EXCEPTION 'FAIL: first claim wrong: %', row_to_json(c);
+  END IF;
+  SELECT * INTO c FROM acq.claim_whatsapp_send('smoke');
+  IF c.reason <> 'waiting_gap' THEN RAISE EXCEPTION 'FAIL: second send not held by the gap: %', c.reason; END IF;
+
+  r := acq.record_whatsapp_result(ma, true, 'true_923009990011@c.us_ABC', NULL);
+  SELECT status INTO st FROM acq.leads WHERE id = a;
+  IF st <> 'CONTACTED' OR NOT EXISTS (SELECT 1 FROM acq.manual_outreach WHERE id = ma AND status = 'SENT' AND api_message_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'FAIL: result not recorded as a send: lead %, %', st, r;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM acq.manual_outreach WHERE lead_id = a AND step_no = 1 AND status = 'SCHEDULED') THEN
+    RAISE EXCEPTION 'FAIL: follow-up not scheduled after an API send';
+  END IF;
+
+  -- A reply cancels the follow-up before anything else.
+  r := acq.record_whatsapp_inbound(jsonb_build_object('event', 'message', 'payload',
+         jsonb_build_object('from', '923009990011@c.us', 'fromMe', false, 'body', 'How much would that cost?')));
+  SELECT status INTO st FROM acq.leads WHERE id = a;
+  IF st <> 'REPLIED' OR EXISTS (SELECT 1 FROM acq.manual_outreach WHERE lead_id = a AND status = 'SCHEDULED') THEN
+    RAISE EXCEPTION 'FAIL: inbound reply not handled: lead %, %', st, r;
+  END IF;
+
+  -- Our own outgoing echo and strangers are ignored.
+  r := acq.record_whatsapp_inbound(jsonb_build_object('event', 'message', 'payload',
+         jsonb_build_object('from', '923009990011@c.us', 'fromMe', true, 'body', 'x')));
+  IF NOT coalesce((r->>'ignored')::boolean, false) THEN RAISE EXCEPTION 'FAIL: fromMe not ignored'; END IF;
+
+  -- After the gap, the second goes; "STOP" from it is an opt-out.
+  UPDATE acq.manual_outreach SET claimed_at = claimed_at - interval '1 hour' WHERE id = ma;
+  SELECT * INTO c FROM acq.claim_whatsapp_send('smoke');
+  IF c.outreach_id IS DISTINCT FROM mb THEN RAISE EXCEPTION 'FAIL: second message not claimed after gap: %', c.reason; END IF;
+  r := acq.record_whatsapp_result(mb, true, 'id-2', NULL);
+  r := acq.record_whatsapp_inbound(jsonb_build_object('event', 'message', 'payload',
+         jsonb_build_object('from', '923009990012@c.us', 'fromMe', false, 'body', 'STOP')));
+  IF NOT (SELECT opt_out FROM acq.leads WHERE id = b) THEN RAISE EXCEPTION 'FAIL: STOP did not opt out: %', r; END IF;
+
+  -- The cap counts today's sends.
+  UPDATE acq.settings SET value = '2'::jsonb WHERE key = 'whatsapp.daily_cap';
+  SELECT * INTO c FROM acq.claim_whatsapp_send('smoke');
+  IF c.reason <> 'daily_cap' THEN RAISE EXCEPTION 'FAIL: daily cap not applied: %', c.reason; END IF;
+
+  RAISE NOTICE 'PASS: off by default, queued by the dashboard, gap held, result recorded, reply and STOP handled, cap applied';
+END $$;
+
+\echo ''
 \echo '=== Summary ======================================================'
 SELECT * FROM acq.v_funnel ORDER BY stage;
 SELECT total_leads, emails_sent, replies, opt_outs, reply_rate_pct FROM acq.v_overview;
