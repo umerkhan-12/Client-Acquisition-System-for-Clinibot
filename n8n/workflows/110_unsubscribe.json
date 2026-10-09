@@ -16,6 +16,7 @@
         260,
         300
       ],
+      "webhookId": "6457a46f-180b-5a36-ae25-9035dd3c6749",
       "notes": "Set unsubscribe.base_url in acq.settings to this webhook's production URL. Until it is set, workflow 50 refuses to send anything.",
       "notesInFlow": false
     },

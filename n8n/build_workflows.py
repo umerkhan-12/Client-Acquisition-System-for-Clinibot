@@ -13,6 +13,7 @@ change to the convention is one edit, and it makes the referential integrity of
 The generated JSON is committed, so nothing here is needed at runtime.
 """
 import json
+import uuid
 import pathlib
 import re
 import sys
@@ -73,6 +74,12 @@ class Builder:
         }
         if pos is None:
             self._col += 1
+        if ntype == "n8n-nodes-base.webhook":
+            # Without a webhookId, n8n registers the production URL as
+            # <workflowId>/<node name>/<path> instead of <path>: WAHA's replies
+            # and every unsubscribe link would hit a 404. Stable per node, so a
+            # rebuild never moves a URL.
+            n["webhookId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"zenvexa-acq/{self.key}/{name}"))
         if creds:
             n["credentials"] = CRED[creds]
         if on_error:
@@ -3750,6 +3757,11 @@ def main():
                           or "scheduleTrigger" in n["type"] or "emailReadImap" in n["type"])
             if not is_trigger and n["name"] not in targets:
                 problems.append(f"{filename}: node {n['name']!r} is unreachable")
+
+        for n in doc["nodes"]:
+            if n["type"] == "n8n-nodes-base.webhook" and not n.get("webhookId"):
+                problems.append(f"{filename}: webhook {n['name']!r} has no webhookId, so its URL "
+                                f"would be prefixed with the workflow id")
 
         # A credential an HTTP node is not told to use is silently not sent.
         for n in doc["nodes"]:

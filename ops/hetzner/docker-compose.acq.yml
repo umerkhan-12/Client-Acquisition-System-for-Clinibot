@@ -1,0 +1,81 @@
+# =====================================================================
+# Acquisition n8n + its own WAHA, beside Clinibot on the Hetzner server.
+#
+# Lives in /opt/acq, a separate compose project on a separate network:
+# nothing here can reach Clinibot's containers, and Clinibot's WAHA (its
+# product number) is never used for outreach. Both ports are loopback-only;
+# reach the UIs over an SSH tunnel:
+#
+#   ssh -L 5679:127.0.0.1:5679 -L 3010:127.0.0.1:3010 root@<server>
+#
+# Memory is capped so the pair can never starve Clinibot on a 4 GB box.
+# Deployed by ops/hetzner/deploy.sh.
+# =====================================================================
+name: acq
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.27.3}
+    container_name: acq-n8n
+    restart: unless-stopped
+    ports: ["127.0.0.1:5679:5678"]
+    mem_limit: 600m
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set in /opt/acq/.env}
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5679/
+      N8N_SECURE_COOKIE: "false"
+      N8N_PROXY_HOPS: "0"
+      GENERIC_TIMEZONE: Asia/Karachi
+      TZ: Asia/Karachi
+      DB_TYPE: sqlite
+      NODE_OPTIONS: --max-old-space-size=450
+      NODE_EXTRA_CA_CERTS: /opt/certs/supabase-root-2021.crt
+      N8N_PUBLIC_API_DISABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: /tmp
+      N8N_PAYLOAD_SIZE_MAX: "16"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: all
+      EXECUTIONS_DATA_SAVE_ON_ERROR: all
+      EXECUTIONS_DATA_SAVE_ON_PROGRESS: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+    volumes:
+      - ./n8n-data:/home/node/.n8n
+      - ./supabase-root-2021.crt:/opt/certs/supabase-root-2021.crt:ro
+      - ./workflows:/workflows:ro
+    networks: [acq]
+
+  # Linked to the separate OUTREACH number only. Pace is enforced by
+  # acq.claim_whatsapp_send(); replies go to workflow 48 inside this network.
+  waha:
+    image: devlikeapro/waha:${WAHA_TAG:-noweb}
+    container_name: acq-waha
+    restart: unless-stopped
+    ports: ["127.0.0.1:3010:3000"]
+    mem_limit: 450m
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?set in /opt/acq/.env}
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set in /opt/acq/.env}
+      WHATSAPP_SWAGGER_USERNAME: admin
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set in /opt/acq/.env}
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WAHA_PRINT_QR: "false"
+      TZ: Asia/Karachi
+    volumes:
+      - ./waha-sessions:/app/.sessions
+    networks: [acq]
+
+networks:
+  acq:
+    driver: bridge

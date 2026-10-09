@@ -17,6 +17,7 @@
         260,
         300
       ],
+      "webhookId": "42bfc5b6-2190-5ea3-8a1c-bf695e64f459",
       "credentials": {
         "httpHeaderAuth": {
           "id": "REPLACE_WAHA_HOOK",
